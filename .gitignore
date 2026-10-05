@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# datasets
+/datasets
+/eval_output
+/eval_output_*
+/processed_dataset
+/processed_dataset_*
+/processed_*
+
+# checkpoints
+/pl_checkpoints
+
+# zips and archives
+*.zip
+*.tar.gz
+*.tar.zst
