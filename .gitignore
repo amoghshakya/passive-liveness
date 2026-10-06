@@ -17,9 +17,6 @@ wheels/
 /processed_dataset_*
 /processed_*
 
-# checkpoints
-/pl_checkpoints
-
 # zips and archives
 *.zip
 *.tar.gz
