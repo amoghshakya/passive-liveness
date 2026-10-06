@@ -161,6 +161,10 @@
       animation: bracket-pulse 600ms ease-out;
     }
 
+    .viewfinder.analyzing .bracket {
+      border-color: var(--text);
+    }
+
     .idle {
       position: absolute;
       inset: 0;
@@ -413,6 +417,34 @@
       background: var(--attack);
     }
 
+    .burst-strip {
+      display: flex;
+      gap: 4px;
+      margin-top: 10px;
+    }
+
+    .burst-strip[hidden] {
+      display: none;
+    }
+
+    .burst-strip i {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      background: var(--muted);
+      opacity: 0.45;
+    }
+
+    .burst-strip i.live {
+      background: var(--signal);
+      opacity: 1;
+    }
+
+    .burst-strip i.spoof {
+      background: var(--attack);
+      opacity: 1;
+    }
+
     /* ---- error ---- */
 
     .error {
@@ -470,8 +502,8 @@
       <span class="bracket br"></span>
       <div class="idle" id="idle">
         <p class="idle-title">Enable camera</p>
-        <p class="idle-sub">A short burst is captured on-device and only the
-          sharpest frame is sent to the server.</p>
+        <p class="idle-sub">A short burst is captured on-device and the
+          sharpest frames are sent to the server — the majority vote decides.</p>
         <button class="btn btn-primary" id="enable-camera" type="button">Enable camera</button>
         <button class="btn btn-text" id="browse" type="button">or upload a frame</button>
       </div>
@@ -479,11 +511,6 @@
 
     <div class="controls">
       <button class="btn btn-primary" id="check" type="button" disabled>Check liveness</button>
-      <label class="switch">
-        <input type="checkbox" id="continuous">
-        <span class="switch-track"></span>
-        Continuous
-      </label>
       <label class="switch">
         <input type="checkbox" id="skip-detection">
         <span class="switch-track"></span>
@@ -507,6 +534,7 @@
         <div class="bar-needle" id="bar-needle"></div>
         <div class="bar-history" id="bar-history"></div>
       </div>
+      <div class="burst-strip" id="burst-strip" hidden></div>
     </section>
 
     <div class="error" id="error" hidden>
@@ -524,6 +552,8 @@
       var BUFFER_SECONDS = 2;
       var SAMPLE_FPS = 5;
       var MAX_SIDE = 1280;
+  var MAX_BURST_FRAMES = 5;
+  var BURST_MIN_GAP = 2;
       var CONTINUOUS_MS = 1000;
       var HISTORY_MAX = 24;
       var REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -538,8 +568,9 @@
         geometry_extraction_failed: 'Face geometry could not be read. Try again.',
         invalid_image: 'That file is not a decodable image.',
         unsupported_media_type: 'Expected an image file.',
-        file_too_large: 'File exceeds the 10 MB limit.',
+        file_too_large: 'File exceeds the configured size limit.',
         empty_upload: 'The uploaded file was empty.',
+        invalid_burst: 'Send between 1 and 8 frames from the same burst.',
         service_unavailable: 'Model is still loading. Try again in a moment.',
         internal_error: 'Something went wrong on the server.'
       };
@@ -553,7 +584,6 @@
       var enableControl = document.getElementById('enable-camera-control');
       var browseBtn = document.getElementById('browse');
       var checkBtn = document.getElementById('check');
-      var contToggle = document.getElementById('continuous');
       var skipDetectionInput = document.getElementById('skip-detection');
       var takePhotoBtn = document.getElementById('take-photo');
       var uploadBtn = document.getElementById('upload');
@@ -566,6 +596,7 @@
       var barNeedle = document.getElementById('bar-needle');
       var barThreshold = document.getElementById('bar-threshold');
       var barThresholdLabel = document.getElementById('bar-threshold-label');
+  var burstStrip = document.getElementById('burst-strip');
       var historyEl = document.getElementById('bar-history');
       var errorBox = document.getElementById('error');
       var errorCode = document.getElementById('error-code');
@@ -578,12 +609,19 @@
         sampler: null,
         timer: null,
         inFlight: false,
-        continuous: false,
         history: []
       };
 
       function setStatus(text) {
         statusEl.textContent = text;
+      }
+
+      // The Check button carries the busy state: disabled
+      // relabeled while a cycle runs, so in-flight cycles
+      // drop dead clicks instead of ignoring them.
+      function setBusy(busy) {
+        checkBtn.disabled = busy || !state.stream;
+        checkBtn.textContent = busy ? 'Analyzing…' : 'Check liveness';
       }
 
       // Match the viewfinder to the content so it never crops
@@ -623,7 +661,7 @@
           enableControl.disabled = true;
           setStatus('camera on — sampling burst');
           state.sampler = setInterval(sample, 1000 / SAMPLE_FPS);
-          startContinuousIfNeeded();
+          startClipLoop();
         }).catch(function (err) {
           cameraUnavailable(err.name === 'NotAllowedError'
             ? 'Permission denied. Allow camera access, or take a photo with the button below.'
@@ -691,16 +729,29 @@
         if (state.buffer.length > BUFFER_SECONDS * SAMPLE_FPS) state.buffer.shift();
       }
 
-      function pickSharpest() {
+      // Up to MAX_BURST_FRAMES sharpest frames, spaced at
+      // least BURST_MIN_GAP buffer slots apart so the vote
+      // isn't fed near-duplicate frames.
+      function pickBurst() {
         if (state.buffer.length === 0) {
           var c = grabFrame();
-          return c ? {canvas: c, sharpness: sharpness(c)} : null;
+          return c ? [{canvas: c, sharpness: sharpness(c)}] : [];
         }
-        var best = state.buffer[0];
-        for (var i = 1; i < state.buffer.length; i++) {
-          if (state.buffer[i].sharpness > best.sharpness) best = state.buffer[i];
+        var order = state.buffer.map(function (f, i) {
+          return {frame: f, index: i};
+        });
+        order.sort(function (a, b) {
+          return b.frame.sharpness - a.frame.sharpness;
+        });
+        var picked = [];
+        for (var i = 0; i < order.length && picked.length < MAX_BURST_FRAMES; i++) {
+          var candidate = order[i];
+          var spaced = picked.every(function (p) {
+            return Math.abs(p.index - candidate.index) >= BURST_MIN_GAP;
+          });
+          if (spaced) picked.push(candidate);
         }
-        return best;
+        return picked.map(function (p) { return p.frame; });
       }
 
       function pulseBrackets() {
@@ -713,23 +764,40 @@
 
       function analyze() {
         if (state.inFlight) return;
-        var frame = pickSharpest();
-        if (!frame) return;
+        var frames = pickBurst();
+        if (frames.length === 0) return;
         state.inFlight = true;
+        setBusy(true);
         pulseBrackets();
+        viewfinder.classList.add('analyzing');
         setStatus('analyzing…');
         errorBox.hidden = true;
 
-        var view = {el: video, w: frame.canvas.width, h: frame.canvas.height};
+        var view = { el: video, w: frames[0].canvas.width, h: frames[0].canvas.height };
 
-        new Promise(function (resolve) {
-          frame.canvas.toBlob(resolve, 'image/jpeg', 0.85);
-        }).then(function (blob) {
-          if (!blob) throw {code: 'empty_upload', message: 'Could not encode the frame.'};
+        var blobs = frames.map(function (frame) {
+          return new Promise(function (resolve) {
+            frame.canvas.toBlob(resolve, 'image/jpeg', 0.85);
+          });
+        });
+
+        Promise.all(blobs).then(function (blobList) {
+          if (blobList.some(function (b) { return !b; })) {
+            throw {code: 'empty_upload', message: 'Could not encode the frames.'};
+          }
           var fd = new FormData();
-          fd.append('file', blob, 'frame.jpg');
+          var endpoint;
+          if (blobList.length === 1) {
+            fd.append('file', blobList[0], 'frame.jpg');
+            endpoint = '/v1/liveness';
+          } else {
+            blobList.forEach(function (blob, i) {
+              fd.append('files', blob, 'frame_' + i + '.jpg');
+            });
+            endpoint = '/v1/liveness/burst';
+          }
           if (skipDetectionInput.checked) fd.append('skip_detection', 'true');
-          return fetch('/v1/liveness', {method: 'POST', body: fd});
+          return fetch(endpoint, {method: 'POST', body: fd});
         }).then(function (res) {
           return res.json().then(function (data) {
             if (!res.ok) throw toError(data);
@@ -739,14 +807,18 @@
           renderError(err);
         }).finally(function () {
           state.inFlight = false;
-          if (!state.continuous) setStatus('ready');
+          setBusy(false);
+          viewfinder.classList.remove('analyzing');
+          if (!state.stream) setStatus('ready');
         });
       }
 
       function analyzeFile(file) {
         if (!file || state.inFlight) return;
         state.inFlight = true;
+        setBusy(true);
         pulseBrackets();
+        viewfinder.classList.add('analyzing');
         setStatus('analyzing…');
         errorBox.hidden = true;
 
@@ -784,7 +856,9 @@
           })
           .finally(function () {
             state.inFlight = false;
-            if (!state.continuous) setStatus('ready');
+            setBusy(false);
+            viewfinder.classList.remove('analyzing');
+            if (!state.stream) setStatus('ready');
           });
       }
 
@@ -809,17 +883,49 @@
         verdictMeta.textContent =
           'score ' + data.score.toFixed(3) +
           ' · threshold ' + data.threshold.toFixed(4) +
-          (data.face ? '' : ' · detection skipped');
+          (data.face ? '' : ' · detection skipped') +
+          (data.counts
+            ? ' · ' + data.counts.live + '/' + (data.counts.live + data.counts.spoof) + ' live'
+            : '');
 
         pushHistory(data.score, data.label);
 
         viewfinder.classList.remove('verdict-live', 'verdict-spoof');
         viewfinder.classList.add(live ? 'verdict-live' : 'verdict-spoof');
 
-        if (view && data.face) drawBBox(data.face.bbox, view, live);
+        if (data.frames) {
+          drawBurst(data, view);
+        } else {
+          burstStrip.hidden = true;
+          burstStrip.innerHTML = '';
+          if (view && data.face) drawBBox(data.face.bbox, view, live);
+        }
 
         var rid = (data.request_id || '').slice(0, 8);
-        setStatus(state.continuous ? 'continuous · ' + rid : 'verdict · ' + rid);
+        setStatus(state.stream ? 'continuous · ' + rid : 'verdict · ' + rid);
+      }
+
+      function drawBurst(data, view) {
+        burstStrip.hidden = false;
+        burstStrip.innerHTML = '';
+        var best = null;
+        for (var i = 0; i < data.frames.length; i++) {
+          var f = data.frames[i];
+          var tick = document.createElement('i');
+          if (f.label) {
+            tick.className = f.label;
+            tick.title = 'frame ' + f.index + ': ' + f.label + ' ' + f.score.toFixed(3);
+            if (!best || Math.abs(f.score - data.score) < Math.abs(best.score - data.score)) {
+              best = f;
+            }
+          } else {
+            tick.title = 'frame ' + f.index + ': ' + f.error;
+          }
+          burstStrip.appendChild(tick);
+        }
+        if (view && best && best.face) {
+          drawBBox(best.face.bbox, view, data.label === 'live');
+        }
       }
 
       function drawBBox(bbox, view, live) {
@@ -868,11 +974,11 @@
         setStatus('error');
       }
 
-      /* ---- continuous mode ---- */
+      /* ---- clip loop: record a ~2s clip, classify it, repeat ---- */
 
-      function startContinuousIfNeeded() {
+      function startClipLoop() {
         clearInterval(state.timer);
-        if (state.continuous && state.stream) {
+        if (state.stream) {
           state.timer = setInterval(function () {
             if (!state.inFlight) analyze();
           }, CONTINUOUS_MS);
@@ -894,11 +1000,6 @@
       cameraInput.addEventListener('change', function () {
         analyzeFile(cameraInput.files[0]);
         cameraInput.value = '';
-      });
-      contToggle.addEventListener('change', function () {
-        state.continuous = contToggle.checked;
-        startContinuousIfNeeded();
-        if (state.continuous) setStatus(`continuous on — analyzing every ${CONTINUOUS_MS / 1000}s`);
       });
 
       viewfinder.addEventListener('dragover', function (e) {

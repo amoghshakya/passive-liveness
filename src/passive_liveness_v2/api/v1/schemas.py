@@ -52,3 +52,39 @@ class LivenessResponse(BaseModel):
     score: float = Field(ge=0.0, le=1.0, description="Probability of live")
     threshold: float = Field(description="Operating point used for the label")
     face: FaceInfo | None = None
+
+
+class BurstCounts(BaseModel):
+    """Per-verdict frame counts for a burst."""
+
+    live: int
+    spoof: int
+
+
+class FrameResult(BaseModel):
+    """Single-frame result inside a burst response."""
+
+    index: int
+    label: Literal["live", "spoof"] | None = None
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    face: FaceInfo | None = None
+    error: str | None = Field(
+        default=None, description="Error code if this frame was rejected"
+    )
+
+
+class LivenessBurstResponse(BaseModel):
+    """Fused verdict for a burst of frames (majority vote)."""
+
+    request_id: str
+    model: str
+    label: Literal["live", "spoof"]
+    score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Median frame score; >= threshold is exactly the "
+        "strict majority vote (even-sized ties fail closed to spoof)",
+    )
+    threshold: float = Field(description="Operating point used for the label")
+    counts: BurstCounts
+    frames: list[FrameResult]

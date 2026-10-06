@@ -31,6 +31,7 @@ from the local checkpoint, so no model download is needed.
 | GET | `/v1/health` | Liveness probe (no model check) |
 | GET | `/v1/ready` | Readiness + model metadata (503 until loaded) |
 | POST | `/v1/liveness` | Multipart image upload -> live/spoof decision |
+| POST | `/v1/liveness/burst` | Majority vote over 1–8 frames (median score; ties fail closed) |
 
 Example:
 
@@ -57,6 +58,26 @@ classified directly with zeroed geometry. Use it for frames that
 visibly contain a face but defeat the detector — scores are
 approximate because the model was trained on aligned face crops.
 
+**Burst mode** (`POST /v1/liveness/burst`) classifies every frame
+and fuses the verdicts by majority vote: the fused score is the
+median frame score, which for any burst size is exactly the strict
+majority vote over the per-frame threshold decisions (even-sized
+ties fail closed to spoof). Frames that fail the quality gate are
+reported per-frame and excluded from the vote; if every frame
+fails, the first failure is raised. The demo's camera flow sends
+the 5 sharpest frames from its 2-second buffer, spaced apart so
+the vote isn't fed near-duplicates.
+
+```bash
+# Burst mode: up to 8 frames from the same ~2s window
+curl -F "files=@f1.jpg" -F "files=@f2.jpg" -F "files=@f3.jpg" \
+  -F "files=@f4.jpg" -F "files=@f5.jpg" \
+  http://localhost:8000/v1/liveness/burst
+# {"label": "live", "score": 0.9612,
+#  "counts": {"live": 5, "spoof": 0},
+#  "frames": [{"index": 0, "label": "live", "score": 0.958, ...}]}
+```
+
 ## Serving pipeline
 
 Mirrors the extraction pipeline in `preprocess.py` so train and
@@ -72,6 +93,9 @@ decode -> RetinaFace detection -> primary face (confidence x area)
 With `skip_detection=true`: `decode -> center square crop ->
 resize 512 -> resize 224 -> normalize -> PAD head` (zeroed
 geometry; no detection, quality gate or alignment).
+
+Burst mode runs the same pipeline per frame and fuses the
+verdicts by majority vote (median score).
 
 ## Configuration
 
