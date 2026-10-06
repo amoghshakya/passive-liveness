@@ -51,6 +51,11 @@ class LivenessResponse(BaseModel):
     label: Literal["live", "spoof"]
     score: float = Field(ge=0.0, le=1.0, description="Probability of live")
     threshold: float = Field(description="Operating point used for the label")
+    skip_detection: bool = Field(
+        default=False,
+        description="True when detection, quality gate and alignment "
+        "were bypassed (score is approximate)",
+    )
     face: FaceInfo | None = None
 
 
@@ -86,5 +91,10 @@ class LivenessBurstResponse(BaseModel):
         "strict majority vote (even-sized ties fail closed to spoof)",
     )
     threshold: float = Field(description="Operating point used for the label")
+    skip_detection: bool = Field(
+        default=False,
+        description="True when detection, quality gate and alignment "
+        "were bypassed for every frame (scores are approximate)",
+    )
     counts: BurstCounts
     frames: list[FrameResult]

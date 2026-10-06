@@ -76,6 +76,7 @@ async def predict_liveness(
         label=prediction.label,
         score=prediction.score,
         threshold=service.settings.threshold,
+        skip_detection=skip_detection,
         face=(
             None
             if prediction.face is None
@@ -200,6 +201,7 @@ async def predict_liveness_burst(
         label=label,
         score=fused,
         threshold=service.settings.threshold,
+        skip_detection=skip_detection,
         counts=BurstCounts(
             live=sum(1 for r in results if r.label == "live"),
             spoof=sum(1 for r in results if r.label == "spoof"),

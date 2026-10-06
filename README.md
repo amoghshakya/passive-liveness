@@ -3,7 +3,7 @@
 Server-side passive face presentation attack detection (PAD) API.
 A frozen DINOv2 (+registers) backbone with a PAD head classifies a
 single face frame as **live** or **spoof**; the client uploads the
-sharpest frame of a capture burst (see `architecture.md`).
+sharpest frames of a capture burst (see `architecture.md`).
 
 ## Run
 
@@ -13,8 +13,8 @@ uv run passive-liveness-v2                             # serve
 ```
 
 Then open http://localhost:8000 for the demo frontend: a live
-camera viewfinder that captures a short burst, picks the sharpest
-frame on-device, and shows the server's live/spoof verdict.
+camera viewfinder — press **Verify liveness** to capture a short
+burst, and the majority-vote verdict replaces the viewfinder.
 
 On first run, the DINOv2 backbone config is fetched from the
 Hugging Face Hub and InsightFace downloads its detection weights
