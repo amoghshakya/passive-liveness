@@ -91,6 +91,12 @@ def _():
         class_weight_live: float = 2.7
         class_weight_spoof: float = 1.6
 
+        # ---- Focal Loss (optional) ------------------------------------
+        use_focal_loss: bool = True  # Replace BCE with focal loss
+        focal_gamma: float = 2.0  # Focusing parameter
+        focal_alpha_live: float = 2.7  # Alpha weight for live class
+        focal_alpha_spoof: float = 1.6  # Alpha weight for spoof class
+
         # ---- operating point --------------------------------------------
         max_bpcer: float = 0.14  # target.txt
 
@@ -1243,6 +1249,20 @@ def _(rate_metrics):
 
 @app.cell
 def _(DEVICE, NORMALIZE, rate_metrics):
+    def focal_loss(logits, targets, labels, cfg):
+        """Focal loss with per-class alpha weighting."""
+        bce_loss = nn.functional.binary_cross_entropy_with_logits(
+            logits, targets, reduction="none"
+        )
+        pt = torch.exp(-bce_loss)
+        alpha = torch.where(
+            labels > 0.5,
+            torch.full_like(logits, cfg.focal_alpha_live),
+            torch.full_like(logits, cfg.focal_alpha_spoof),
+        )
+        loss = alpha * (1 - pt) ** cfg.focal_gamma * bce_loss
+        return loss.mean()
+
     def train_model(
         model,
         train_loader,
@@ -1355,8 +1375,11 @@ def _(DEVICE, NORMALIZE, rate_metrics):
                     + 0.5 * cfg.label_smoothing
                 )
 
-                # Basic BCE loss
-                loss = bce(logits, target)
+                # Classification loss: focal loss (or BCE fallback)
+                if cfg.use_focal_loss:
+                    loss = focal_loss(logits, target, labels, cfg)
+                else:
+                    loss = bce(logits, target)
 
                 # Apply class weights manually since BCEWithLogitsLoss doesn't directly support per-sample weights
                 # We'll weight the loss per sample based on class
