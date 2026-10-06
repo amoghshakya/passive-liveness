@@ -7,6 +7,8 @@ import anyio
 import uvicorn
 from fastapi import FastAPI
 
+from passive_liveness_v2.api.demo import router as demo_router
+from passive_liveness_v2.api.probes import router as probes_router
 from passive_liveness_v2.api.v1.router import api_router
 from passive_liveness_v2.core.config import get_settings
 from passive_liveness_v2.core.errors import (
@@ -39,6 +41,8 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(RequestIdMiddleware)
     register_exception_handlers(app)
+    app.include_router(demo_router)
+    app.include_router(probes_router)
     app.include_router(api_router)
     return app
 

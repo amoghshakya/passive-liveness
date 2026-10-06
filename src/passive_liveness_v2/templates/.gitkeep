@@ -1,2 +1,0 @@
-# Optional demo UI templates (future). Jinja2 templates for a browser
-# frontend would live here; fastapi[standard] already ships jinja2.

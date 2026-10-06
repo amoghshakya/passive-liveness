@@ -36,6 +36,13 @@ class ReadyResponse(BaseModel):
     model: ModelInfo
 
 
+class FaceInfo(BaseModel):
+    """Detection details for the face the verdict is based on."""
+
+    bbox: tuple[int, int, int, int]  # x1, y1, x2, y2 in the uploaded frame
+    det_score: float = Field(ge=0.0, le=1.0)
+
+
 class LivenessResponse(BaseModel):
     """Result of a single-frame liveness check."""
 
@@ -44,3 +51,4 @@ class LivenessResponse(BaseModel):
     label: Literal["live", "spoof"]
     score: float = Field(ge=0.0, le=1.0, description="Probability of live")
     threshold: float = Field(description="Operating point used for the label")
+    face: FaceInfo | None = None

@@ -24,6 +24,7 @@ app = marimo.App(width="medium", auto_download=["html"])
 with app.setup:
     import json
     import os
+    import random
     import time
     from dataclasses import asdict, dataclass, field, fields
     from pathlib import Path
@@ -73,7 +74,7 @@ def _():
         backbone_lr_mult: float = 0.1  # backbone learns slower than head
         patience: int = 15
         label_smoothing: float = 0.1
-        seed: int = 42
+        seed: int = 37
 
         # ---- Learning Rate Scheduling ------------------------------------
         lr_scheduler_type: str = (
@@ -171,6 +172,19 @@ def _():
         PROCESSED_DIR,
         RunConfig,
     )
+
+
+@app.function
+def set_seed(seed: int, deterministic: bool = False):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
 
 @app.cell
@@ -1251,8 +1265,7 @@ def _(DEVICE, NORMALIZE, rate_metrics):
         current model, so `val_acer` tracks the operating point rather than a
         fixed cut.
         """
-        torch.manual_seed(cfg.seed)
-        torch.cuda.manual_seed(cfg.seed)
+        set_seed(cfg.seed)
         backbone_params = [
             p for p in model.backbone.parameters() if p.requires_grad
         ]
@@ -1520,7 +1533,7 @@ def _(DEVICE):
                 "depth-anything/Depth-Anything-V2-Base-hf"
             )
 
-            print("DepthAnything V2 Small loaded successfully.")
+            print("DepthAnything V2 loaded successfully.")
             return depth_model, depth_transform
         except Exception as e:
             print(f"Warning: Could not load DepthAnything: {e}")
@@ -1582,23 +1595,26 @@ def _(
         # depth
         depth_model = None
         depth_transform = None
-        try:
-            # try load a lightweight depth model
-            depth_model, depth_transform = load_depth()
-            print("Depth estimation model loaded successfully.")
-        except Exception as e:
-            print(f"Warning: Could not load depth estimation model: {e}")
-            print(
-                "Training will continue without depth information (depth features will be zero)"
-            )
+        if cfg.use_depth_head:
+            try:
+                # try load a lightweight depth model
+                depth_model, depth_transform = load_depth()
+                print("Depth estimation model loaded successfully.")
+            except Exception as e:
+                print(f"Warning: Could not load depth estimation model: {e}")
+                print(
+                    "Training will continue without depth information (depth features will be zero)"
+                )
 
         # Load model
         backbone = load_backbone(cfg.backbone, cfg)
+        set_seed(cfg.seed)
         model = LivenessModel(
             backbone,
             backbone.config.hidden_size,
             use_freq_head=cfg.use_freq_head,
             use_geometry=cfg.use_geometry,
+            use_depth_head=cfg.use_depth_head,
             head_hidden=cfg.head_hidden,
         ).to(next(backbone.parameters()).device)
 
@@ -1738,7 +1754,6 @@ def _(
     RunConfig,
     fetch_official_test_bundle,
     load_backbone,
-    load_depth,
     load_fold_data,
     per_attack_apcer,
     rate_metrics,
@@ -1799,16 +1814,15 @@ def _(
             pin_memory=True,
         )
 
-        depth_model, depth_transform = load_depth()
-
         # load model
         cfg = RunConfig()
         backbone = load_backbone(cfg.backbone, cfg)
         model = LivenessModel(
             backbone,
             backbone.config.hidden_size,
-            use_freq_head=True,
-            use_geometry=True,
+            use_freq_head=cfg.use_freq_head,
+            use_geometry=cfg.use_geometry,
+            use_depth_head=cfg.use_depth_head,
             head_hidden=128,
         ).to(DEVICE)
 

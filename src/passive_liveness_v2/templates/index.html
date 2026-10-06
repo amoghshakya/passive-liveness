@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>passive liveness</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap"
+    rel="stylesheet">
+  <style>
+    :root {
+      --ink: #0D1218;
+      --panel: #131A22;
+      --hairline: #2A3440;
+      --text: #E8EAEC;
+      --muted: #9AA6B2;
+      --signal: #3FD9B6;
+      --attack: #E4572E;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      background: var(--ink);
+      color: var(--text);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 48px 20px 64px;
+    }
+
+    .wrap {
+      width: 100%;
+      max-width: 640px;
+    }
+
+    h1 {
+      font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+      font-size: 28px;
+      font-weight: 600;
+      line-height: 34px;
+      letter-spacing: -0.01em;
+      margin: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 6px 0 28px;
+      max-width: 60ch;
+    }
+
+    /* ---- viewfinder ---- */
+
+    .viewfinder {
+      position: relative;
+      aspect-ratio: 4 / 3;
+      background: var(--panel);
+      border: 1px dashed var(--hairline);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .viewfinder.live {
+      border-style: solid;
+    }
+
+    .viewfinder.drag {
+      border-color: var(--text);
+    }
+
+    .viewfinder video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      outline: 1px solid oklch(1 0 0 / 0.1);
+    }
+
+    .still {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      outline: 1px solid oklch(1 0 0 / 0.1);
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .bracket {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border: 0 solid var(--muted);
+      transition: border-color 300ms ease-out;
+    }
+
+    .bracket.tl {
+      top: 10px;
+      left: 10px;
+      border-top-width: 2px;
+      border-left-width: 2px;
+    }
+
+    .bracket.tr {
+      top: 10px;
+      right: 10px;
+      border-top-width: 2px;
+      border-right-width: 2px;
+    }
+
+    .bracket.bl {
+      bottom: 10px;
+      left: 10px;
+      border-bottom-width: 2px;
+      border-left-width: 2px;
+    }
+
+    .bracket.br {
+      bottom: 10px;
+      right: 10px;
+      border-bottom-width: 2px;
+      border-right-width: 2px;
+    }
+
+    .viewfinder.verdict-live .bracket {
+      border-color: var(--signal);
+    }
+
+    .viewfinder.verdict-spoof .bracket {
+      border-color: var(--attack);
+    }
+
+    @keyframes bracket-pulse {
+      0% {
+        border-color: var(--text);
+      }
+
+      100% {
+        border-color: var(--muted);
+      }
+    }
+
+    .viewfinder.capturing .bracket {
+      animation: bracket-pulse 600ms ease-out;
+    }
+
+    .idle {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      text-align: center;
+      padding: 24px;
+    }
+
+    .idle[hidden] {
+      display: none;
+    }
+
+    .idle-title {
+      font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+      font-size: 18px;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .idle-sub {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0;
+      max-width: 42ch;
+    }
+
+    /* ---- controls ---- */
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+
+    .btn {
+      font: 500 14px/1 'Inter', system-ui, sans-serif;
+      padding: 11px 18px;
+      border-radius: 4px;
+      border: 1px solid var(--hairline);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      background: var(--signal);
+      border-color: var(--signal);
+      color: var(--ink);
+    }
+
+    .btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .btn:active {
+      transform: scale(0.96);
+    }
+
+    .btn-text {
+      border: none;
+      padding: 4px 0;
+      color: var(--muted);
+    }
+
+    .btn-text:hover {
+      color: var(--text);
+    }
+
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .switch-track {
+      width: 32px;
+      height: 18px;
+      border-radius: 9px;
+      background: var(--hairline);
+      position: relative;
+      transition: background 200ms ease-out;
+      flex: none;
+    }
+
+    .switch-track::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--text);
+      transition: left 200ms ease-out;
+    }
+
+    .switch input:checked+.switch-track {
+      background: var(--signal);
+    }
+
+    .switch input:checked+.switch-track::after {
+      left: 16px;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--signal);
+      outline-offset: 2px;
+    }
+
+    .switch input:focus-visible+.switch-track {
+      outline: 2px solid var(--signal);
+      outline-offset: 2px;
+    }
+
+    /* ---- verdict strip ---- */
+
+    .verdict {
+      margin-top: 22px;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      min-height: 20px;
+      margin: 0 0 8px;
+    }
+
+    .verdict-word {
+      font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+      font-size: clamp(32px, 8vw, 40px);
+      font-weight: 600;
+      line-height: 44px;
+      letter-spacing: -0.02em;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .verdict-word.live {
+      color: var(--signal);
+    }
+
+    .verdict-word.spoof {
+      color: var(--attack);
+    }
+
+    .verdict-meta {
+      color: var(--muted);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      margin: 4px 0 0;
+    }
+
+    .bar {
+      position: relative;
+      height: 6px;
+      background: var(--hairline);
+      border-radius: 3px;
+      margin-top: 18px;
+    }
+
+    .bar-fill {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 0;
+      background: var(--muted);
+      border-radius: 3px;
+      transition: width 300ms ease-out;
+    }
+
+    .bar-fill.live {
+      background: var(--signal);
+    }
+
+    .bar-fill.spoof {
+      background: var(--attack);
+    }
+
+    .bar-threshold {
+      position: absolute;
+      top: -4px;
+      bottom: -4px;
+      width: 2px;
+      background: var(--text);
+      left: 93.53%;
+    }
+
+    .bar-threshold-label {
+      position: absolute;
+      top: 10px;
+      transform: translateX(-50%);
+      color: var(--muted);
+      font-size: 11.5px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .bar-needle {
+      position: absolute;
+      top: -5px;
+      bottom: -5px;
+      width: 2px;
+      background: var(--text);
+      left: 0;
+      transition: left 300ms ease-out;
+    }
+
+    .bar-history {
+      position: absolute;
+      top: 12px;
+      left: 0;
+      right: 0;
+      height: 6px;
+      pointer-events: none;
+    }
+
+    .bar-history i {
+      position: absolute;
+      width: 2px;
+      height: 6px;
+      background: var(--hairline);
+      border-radius: 1px;
+    }
+
+    .bar-history i.live {
+      background: var(--signal);
+    }
+
+    .bar-history i.spoof {
+      background: var(--attack);
+    }
+
+    /* ---- error ---- */
+
+    .error {
+      margin-top: 16px;
+      padding: 10px 12px;
+      border: 1px solid var(--attack);
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    .error code {
+      display: block;
+      font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+      font-size: 12px;
+      color: var(--attack);
+      margin-bottom: 2px;
+    }
+
+    /* ---- footer ---- */
+
+    .footer {
+      margin-top: 30px;
+      padding-top: 14px;
+      border-top: 1px solid var(--hairline);
+      color: var(--muted);
+      font-size: 12.5px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      *,
+      *::before,
+      *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="wrap">
+    <h1>passive liveness</h1>
+    <p class="subtitle">One frame, one verdict. The server detects the face,
+      aligns it, and decides live or spoof &mdash; you do nothing deliberate.</p>
+
+    <div class="viewfinder" id="viewfinder">
+      <video id="video" muted playsinline autoplay></video>
+      <img class="still" id="still" alt="Uploaded frame" hidden>
+      <canvas class="overlay" id="overlay"></canvas>
+      <span class="bracket tl"></span>
+      <span class="bracket tr"></span>
+      <span class="bracket bl"></span>
+      <span class="bracket br"></span>
+      <div class="idle" id="idle">
+        <p class="idle-title">Enable camera</p>
+        <p class="idle-sub">A short burst is captured on-device and only the
+          sharpest frame is sent to the server.</p>
+        <button class="btn btn-primary" id="enable-camera" type="button">Enable camera</button>
+        <button class="btn btn-text" id="browse" type="button">or upload a frame</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-primary" id="check" type="button" disabled>Check liveness</button>
+      <label class="switch">
+        <input type="checkbox" id="continuous">
+        <span class="switch-track"></span>
+        Continuous
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="skip-detection">
+        <span class="switch-track"></span>
+        Skip detection
+      </label>
+      <button class="btn btn-text" id="enable-camera-control" type="button">Enable camera</button>
+      <button class="btn btn-text" id="take-photo" type="button">Take photo</button>
+      <button class="btn btn-text" id="upload" type="button">Upload photo</button>
+      <input type="file" id="file-camera" accept="image/*" capture="user" hidden>
+      <input type="file" id="file" accept="image/*" hidden>
+    </div>
+
+    <section class="verdict" aria-live="polite">
+      <p class="status" id="status">ready</p>
+      <h2 class="verdict-word" id="verdict-word">Awaiting frame</h2>
+      <p class="verdict-meta" id="verdict-meta"></p>
+      <div class="bar">
+        <div class="bar-fill" id="bar-fill"></div>
+        <div class="bar-threshold" id="bar-threshold"></div>
+        <span class="bar-threshold-label" id="bar-threshold-label">threshold 0.9353</span>
+        <div class="bar-needle" id="bar-needle"></div>
+        <div class="bar-history" id="bar-history"></div>
+      </div>
+    </section>
+
+    <div class="error" id="error" hidden>
+      <code id="error-code"></code>
+      <span id="error-message"></span>
+    </div>
+
+    <footer class="footer" id="model-meta">loading model&hellip;</footer>
+  </main>
+
+  <script>
+    (() => {
+      'use strict';
+
+      var BUFFER_SECONDS = 2;
+      var SAMPLE_FPS = 5;
+      var MAX_SIDE = 1280;
+      var CONTINUOUS_MS = 1000;
+      var HISTORY_MAX = 24;
+      var REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      var GUIDANCE = {
+        no_face_detected: 'No face in frame. Hold your face in the viewfinder and try again.',
+        low_confidence: 'Face unclear. Move closer to the camera and try again.',
+        face_too_small: 'Face too small. Move closer to the camera.',
+        low_quality: 'Frame too blurry. Improve the lighting or hold still.',
+        extreme_pose: 'Pose too extreme. Face the camera straight on.',
+        invalid_bbox: 'Detection failed. Try again.',
+        geometry_extraction_failed: 'Face geometry could not be read. Try again.',
+        invalid_image: 'That file is not a decodable image.',
+        unsupported_media_type: 'Expected an image file.',
+        file_too_large: 'File exceeds the 10 MB limit.',
+        empty_upload: 'The uploaded file was empty.',
+        service_unavailable: 'Model is still loading. Try again in a moment.',
+        internal_error: 'Something went wrong on the server.'
+      };
+
+      var viewfinder = document.getElementById('viewfinder');
+      var video = document.getElementById('video');
+      var still = document.getElementById('still');
+      var overlay = document.getElementById('overlay');
+      var idle = document.getElementById('idle');
+      var enableBtn = document.getElementById('enable-camera');
+      var enableControl = document.getElementById('enable-camera-control');
+      var browseBtn = document.getElementById('browse');
+      var checkBtn = document.getElementById('check');
+      var contToggle = document.getElementById('continuous');
+      var skipDetectionInput = document.getElementById('skip-detection');
+      var takePhotoBtn = document.getElementById('take-photo');
+      var uploadBtn = document.getElementById('upload');
+      var fileInput = document.getElementById('file');
+      var cameraInput = document.getElementById('file-camera');
+      var statusEl = document.getElementById('status');
+      var verdictWord = document.getElementById('verdict-word');
+      var verdictMeta = document.getElementById('verdict-meta');
+      var barFill = document.getElementById('bar-fill');
+      var barNeedle = document.getElementById('bar-needle');
+      var barThreshold = document.getElementById('bar-threshold');
+      var barThresholdLabel = document.getElementById('bar-threshold-label');
+      var historyEl = document.getElementById('bar-history');
+      var errorBox = document.getElementById('error');
+      var errorCode = document.getElementById('error-code');
+      var errorMessage = document.getElementById('error-message');
+      var footerEl = document.getElementById('model-meta');
+
+      var state = {
+        stream: null,
+        buffer: [],
+        sampler: null,
+        timer: null,
+        inFlight: false,
+        continuous: false,
+        history: []
+      };
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      // Match the viewfinder to the content so it never crops
+      // (object-fit: cover becomes an exact fit at equal aspect).
+      // Clamped to [1:2, 2:1] so extreme panoramas or tall
+      // crops keep a sane box; overflow there still crops.
+      function fitViewfinder(w, h) {
+        if (!w || !h) return;
+        var ratio = w / h;
+        if (ratio < 0.5) ratio = 0.5;
+        if (ratio > 2) ratio = 2;
+        viewfinder.style.aspectRatio = String(ratio);
+      }
+
+      /* ---- camera ---- */
+
+      function enableCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          cameraUnavailable('Camera capture needs a secure (HTTPS) connection.');
+          return;
+        }
+        navigator.mediaDevices.getUserMedia({
+          video: {facingMode: 'user', width: {ideal: 1280}, height: {ideal: 720}},
+          audio: false
+        }).then(function (stream) {
+          state.stream = stream;
+          video.srcObject = stream;
+          return video.play();
+        }).then(function () {
+          idle.hidden = true;
+          still.hidden = true;
+          video.hidden = false;
+          viewfinder.classList.add('live');
+          fitViewfinder(video.videoWidth, video.videoHeight);
+          checkBtn.disabled = false;
+          enableControl.textContent = 'Camera on';
+          enableControl.disabled = true;
+          setStatus('camera on — sampling burst');
+          state.sampler = setInterval(sample, 1000 / SAMPLE_FPS);
+          startContinuousIfNeeded();
+        }).catch(function (err) {
+          cameraUnavailable(err.name === 'NotAllowedError'
+            ? 'Permission denied. Allow camera access, or take a photo with the button below.'
+            : 'The in-browser camera needs HTTPS (it works on localhost). Take a photo instead, or tunnel this server (e.g. ngrok http 8000) and reopen the page.');
+        });
+      }
+
+      function cameraUnavailable(message) {
+        idle.querySelector('.idle-title').textContent = 'No live camera';
+        idle.querySelector('.idle-sub').textContent = message;
+        enableBtn.hidden = true;
+      }
+
+      /* ---- burst buffer + sharpness ---- */
+
+      function grabFrame() {
+        if (!video.videoWidth) return null;
+        var scale = Math.min(1, MAX_SIDE / video.videoWidth);
+        var w = Math.max(1, Math.round(video.videoWidth * scale));
+        var h = Math.max(1, Math.round(video.videoHeight * scale));
+        var c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        c.getContext('2d').drawImage(video, 0, 0, w, h);
+        return c;
+      }
+
+      // Variance of the Laplacian on a small grayscale copy —
+      // the standard focus measure, same signal the server uses.
+      function sharpness(canvas) {
+        var S = 160;
+        var scale = Math.min(1, S / canvas.width);
+        var w = Math.max(2, Math.round(canvas.width * scale));
+        var h = Math.max(2, Math.round(canvas.height * scale));
+        var c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        var ctx = c.getContext('2d');
+        ctx.drawImage(canvas, 0, 0, w, h);
+        var d = ctx.getImageData(0, 0, w, h).data;
+        var g = new Float32Array(w * h);
+        for (var i = 0; i < w * h; i++) {
+          var j = i * 4;
+          g[i] = d[j] * 0.299 + d[j + 1] * 0.587 + d[j + 2] * 0.114;
+        }
+        var sum = 0, sum2 = 0, n = 0;
+        for (var y = 1; y < h - 1; y++) {
+          for (var x = 1; x < w - 1; x++) {
+            var k = y * w + x;
+            var lap = g[k - w] + g[k + w] + g[k - 1] + g[k + 1] - 4 * g[k];
+            sum += lap;
+            sum2 += lap * lap;
+            n++;
+          }
+        }
+        if (n < 2) return 0;
+        var mean = sum / n;
+        return sum2 / n - mean * mean;
+      }
+
+      function sample() {
+        var c = grabFrame();
+        if (!c) return;
+        state.buffer.push({canvas: c, sharpness: sharpness(c)});
+        if (state.buffer.length > BUFFER_SECONDS * SAMPLE_FPS) state.buffer.shift();
+      }
+
+      function pickSharpest() {
+        if (state.buffer.length === 0) {
+          var c = grabFrame();
+          return c ? {canvas: c, sharpness: sharpness(c)} : null;
+        }
+        var best = state.buffer[0];
+        for (var i = 1; i < state.buffer.length; i++) {
+          if (state.buffer[i].sharpness > best.sharpness) best = state.buffer[i];
+        }
+        return best;
+      }
+
+      function pulseBrackets() {
+        viewfinder.classList.remove('capturing');
+        void viewfinder.offsetWidth; // restart the pulse animation
+        viewfinder.classList.add('capturing');
+      }
+
+      /* ---- analysis ---- */
+
+      function analyze() {
+        if (state.inFlight) return;
+        var frame = pickSharpest();
+        if (!frame) return;
+        state.inFlight = true;
+        pulseBrackets();
+        setStatus('analyzing…');
+        errorBox.hidden = true;
+
+        var view = {el: video, w: frame.canvas.width, h: frame.canvas.height};
+
+        new Promise(function (resolve) {
+          frame.canvas.toBlob(resolve, 'image/jpeg', 0.85);
+        }).then(function (blob) {
+          if (!blob) throw {code: 'empty_upload', message: 'Could not encode the frame.'};
+          var fd = new FormData();
+          fd.append('file', blob, 'frame.jpg');
+          if (skipDetectionInput.checked) fd.append('skip_detection', 'true');
+          return fetch('/v1/liveness', {method: 'POST', body: fd});
+        }).then(function (res) {
+          return res.json().then(function (data) {
+            if (!res.ok) throw toError(data);
+            renderVerdict(data, view);
+          });
+        }).catch(function (err) {
+          renderError(err);
+        }).finally(function () {
+          state.inFlight = false;
+          if (!state.continuous) setStatus('ready');
+        });
+      }
+
+      function analyzeFile(file) {
+        if (!file || state.inFlight) return;
+        state.inFlight = true;
+        pulseBrackets();
+        setStatus('analyzing…');
+        errorBox.hidden = true;
+
+        // Preview the frame in the viewfinder so the evaluation is visible,
+        // then send it to the server.
+        var url = URL.createObjectURL(file);
+        var probe = new Image();
+        probe.onload = function () {
+          idle.hidden = true;
+          fitViewfinder(probe.naturalWidth, probe.naturalHeight);
+          still.src = url;
+          still.hidden = false;
+          video.hidden = true;
+          uploadAndRender(file, {el: still, w: probe.naturalWidth, h: probe.naturalHeight});
+        };
+        probe.onerror = function () {
+          uploadAndRender(file, null);
+        };
+        probe.src = url;
+      }
+
+      function uploadAndRender(file, view) {
+        var fd = new FormData();
+        fd.append('file', file);
+        if (skipDetectionInput.checked) fd.append('skip_detection', 'true');
+        fetch('/v1/liveness', {method: 'POST', body: fd})
+          .then(function (res) {
+            return res.json().then(function (data) {
+              if (!res.ok) throw toError(data);
+              renderVerdict(data, view);
+            });
+          })
+          .catch(function (err) {
+            renderError(err);
+          })
+          .finally(function () {
+            state.inFlight = false;
+            if (!state.continuous) setStatus('ready');
+          });
+      }
+
+      function toError(data) {
+        var e = (data && data.error) || {};
+        return {code: e.code || 'internal_error', message: e.message || 'Unexpected server error.'};
+      }
+
+      /* ---- rendering ---- */
+
+      function renderVerdict(data, view) {
+        var live = data.label === 'live';
+
+        verdictWord.textContent = live ? 'Live' : 'Spoof';
+        verdictWord.className = 'verdict-word ' + data.label;
+
+        barFill.style.width = (data.score * 100).toFixed(2) + '%';
+        barFill.className = 'bar-fill ' + data.label;
+        barNeedle.style.left = (data.score * 100).toFixed(2) + '%';
+        barNeedle.style.background = live ? 'var(--signal)' : 'var(--attack)';
+
+        verdictMeta.textContent =
+          'score ' + data.score.toFixed(3) +
+          ' · threshold ' + data.threshold.toFixed(4) +
+          (data.face ? '' : ' · detection skipped');
+
+        pushHistory(data.score, data.label);
+
+        viewfinder.classList.remove('verdict-live', 'verdict-spoof');
+        viewfinder.classList.add(live ? 'verdict-live' : 'verdict-spoof');
+
+        if (view && data.face) drawBBox(data.face.bbox, view, live);
+
+        var rid = (data.request_id || '').slice(0, 8);
+        setStatus(state.continuous ? 'continuous · ' + rid : 'verdict · ' + rid);
+      }
+
+      function drawBBox(bbox, view, live) {
+        var rect = view.el.getBoundingClientRect();
+        if (rect.width === 0) return;
+        overlay.width = Math.round(rect.width);
+        overlay.height = Math.round(rect.height);
+        var ctx = overlay.getContext('2d');
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+        // cover mapping: source frame -> displayed element box
+        var scale = Math.max(rect.width / view.w, rect.height / view.h);
+        var offX = (rect.width - view.w * scale) / 2;
+        var offY = (rect.height - view.h * scale) / 2;
+
+        var x1 = bbox[0] * scale + offX;
+        var y1 = bbox[1] * scale + offY;
+        var x2 = bbox[2] * scale + offX;
+        var y2 = bbox[3] * scale + offY;
+
+        ctx.strokeStyle = live ? '#3FD9B6' : '#E4572E';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      }
+
+      function pushHistory(score, label) {
+        state.history.push({score: score, label: label});
+        if (state.history.length > HISTORY_MAX) state.history.shift();
+        historyEl.innerHTML = '';
+        for (var i = 0; i < state.history.length; i++) {
+          var tick = document.createElement('i');
+          tick.className = state.history[i].label;
+          tick.style.left = (state.history[i].score * 100).toFixed(2) + '%';
+          historyEl.appendChild(tick);
+        }
+      }
+
+      function renderError(err) {
+        var code = err.code || 'internal_error';
+        errorCode.textContent = code;
+        errorMessage.textContent =
+          GUIDANCE[code] || err.message || 'Something went wrong. Try again.';
+        errorBox.hidden = false;
+        verdictWord.textContent = 'No verdict';
+        verdictWord.className = 'verdict-word';
+        setStatus('error');
+      }
+
+      /* ---- continuous mode ---- */
+
+      function startContinuousIfNeeded() {
+        clearInterval(state.timer);
+        if (state.continuous && state.stream) {
+          state.timer = setInterval(function () {
+            if (!state.inFlight) analyze();
+          }, CONTINUOUS_MS);
+        }
+      }
+
+      /* ---- wiring ---- */
+
+      enableBtn.addEventListener('click', enableCamera);
+      enableControl.addEventListener('click', enableCamera);
+      browseBtn.addEventListener('click', function () {fileInput.click();});
+      takePhotoBtn.addEventListener('click', function () {cameraInput.click();});
+      uploadBtn.addEventListener('click', function () {fileInput.click();});
+      checkBtn.addEventListener('click', analyze);
+      fileInput.addEventListener('change', function () {
+        analyzeFile(fileInput.files[0]);
+        fileInput.value = '';
+      });
+      cameraInput.addEventListener('change', function () {
+        analyzeFile(cameraInput.files[0]);
+        cameraInput.value = '';
+      });
+      contToggle.addEventListener('change', function () {
+        state.continuous = contToggle.checked;
+        startContinuousIfNeeded();
+        if (state.continuous) setStatus(`continuous on — analyzing every ${CONTINUOUS_MS / 1000}s`);
+      });
+
+      viewfinder.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        viewfinder.classList.add('drag');
+      });
+      viewfinder.addEventListener('dragleave', function () {
+        viewfinder.classList.remove('drag');
+      });
+      viewfinder.addEventListener('drop', function (e) {
+        e.preventDefault();
+        viewfinder.classList.remove('drag');
+        var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (file && file.type.indexOf('image/') === 0) analyzeFile(file);
+      });
+
+      // Model metadata: footer + threshold tick position.
+      fetch('/v1/ready')
+        .then(function (r) {return r.json();})
+        .then(function (m) {
+          footerEl.textContent = m.model.name + ' · ' + m.model.backbone +
+            ' · ' + m.model.device + ' · threshold ' + m.model.threshold.toFixed(4);
+          var pct = (m.model.threshold * 100).toFixed(2) + '%';
+          barThreshold.style.left = pct;
+          barThresholdLabel.style.left = pct;
+          barThresholdLabel.textContent = 'threshold ' + m.model.threshold.toFixed(4);
+        })
+        .catch(function () {
+          footerEl.textContent = 'model metadata unavailable';
+        });
+    })();
+  </script>
+</body>
+
+</html>
