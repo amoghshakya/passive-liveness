@@ -77,13 +77,9 @@ def _():
         seed: int = 37
 
         # ---- Learning Rate Scheduling ------------------------------------
-        lr_scheduler_type: str = (
-            "cosine"  # Options: "step", "exponential", "cosine"
-        )
+        lr_scheduler_type: str = "cosine"  # Options: "step", "exponential", "cosine"
         lr_decay_factor: float = 0.5  # Factor to reduce LR by
-        lr_decay_epochs: int = (
-            10  # epochs between LR reductions for step scheduler
-        )
+        lr_decay_epochs: int = 10  # epochs between LR reductions for step scheduler
 
         # ---- Class Weighting for Imbalanced Data -------------------------
         # Calculated from data distribution: ~37% live, 63% spoof
@@ -92,10 +88,11 @@ def _():
         class_weight_spoof: float = 1.6
 
         # ---- Focal Loss (optional) ------------------------------------
-        use_focal_loss: bool = True  # Replace BCE with focal loss
+        use_focal_loss: bool = False  # Replace BCE with focal loss
         focal_gamma: float = 2.0  # Focusing parameter
-        focal_alpha_live: float = 2.7  # Alpha weight for live class
-        focal_alpha_spoof: float = 1.6  # Alpha weight for spoof class
+        # Alpha weights derived from class frequencies (live ~37%, spoof ~63%)
+        focal_alpha_live: float = 0.63  # Weight for live class
+        focal_alpha_spoof: float = 0.37  # Weight for spoof class
 
         # ---- operating point --------------------------------------------
         max_bpcer: float = 0.14  # target.txt
@@ -106,9 +103,7 @@ def _():
 
         # ---- Early Stopping Metric --------------------------------------
         # Monitor BPCER instead of ACER to avoid over-prioritizing APCER=0
-        monitor_metric_for_early_stop: str = (
-            "bpc"  # Options: "acer", "bpc", "loss"
-        )
+        monitor_metric_for_early_stop: str = "bpc"  # Options: "acer", "bpc", "loss"
 
     # ArcFace 5-point reference layout
     REF_112 = np.array(
@@ -220,9 +215,7 @@ def _(PROCESSED_DIR, fs):
             print(f"{target_dir} already present, skipping download")
             return
         matches = [
-            p
-            for p in fs.glob(f"*{filename}*")
-            if p.rsplit("/", 1)[-1] == filename
+            p for p in fs.glob(f"*{filename}*") if p.rsplit("/", 1)[-1] == filename
         ]
         assert matches, f"{filename} not found on Drive"
         print(f"downloading {matches[0]} ...")
@@ -258,9 +251,7 @@ def _(PROCESSED_DIR):
             )
         if "device" in frames.columns:
             frames = frames.drop(columns=["device"])
-        frames = frames.merge(
-            videos[["video_id", "device"]], on="video_id", how="left"
-        )
+        frames = frames.merge(videos[["video_id", "device"]], on="video_id", how="left")
         frames["binary_label"] = (frames["label"] == "genuine").astype(int)
         frames["frame_path"] = frames[["frame_path"]].map(
             lambda p: os.path.join(root, p)
@@ -283,15 +274,9 @@ def _(PROCESSED_DIR):
         }
         assert not (ids["train"] & ids["val"]), "train/val subject overlap"
 
-        train = frames[frames["video_id"].isin(ids["train"])].reset_index(
-            drop=True
-        )
-        val = frames[frames["video_id"].isin(ids["val"])].reset_index(
-            drop=True
-        )
-        print(
-            f"-- fold {fold}: VAL is development signal, not a test result --"
-        )
+        train = frames[frames["video_id"].isin(ids["train"])].reset_index(drop=True)
+        val = frames[frames["video_id"].isin(ids["val"])].reset_index(drop=True)
+        print(f"-- fold {fold}: VAL is development signal, not a test result --")
         for name, df in (("train", train), ("val", val)):
             live = int((df["binary_label"] == 1).sum())
             print(
@@ -355,9 +340,7 @@ def _():
                     [w.get(s, default_source_weight) for s in available],
                     dtype=float,
                 )
-                if (
-                    probs.sum() <= 0
-                ):  # every weight was 0 -> fall back to uniform
+                if probs.sum() <= 0:  # every weight was 0 -> fall back to uniform
                     probs = np.full(len(available), 1.0 / len(available))
                 probs = probs / probs.sum()
                 self._source_probs[label] = dict(zip(available, probs))
@@ -390,8 +373,7 @@ def _():
         """
         for label in sampler._labels:
             probs = {
-                s: round(p, 3)
-                for s, p in sorted(sampler._source_probs[label].items())
+                s: round(p, 3) for s, p in sorted(sampler._source_probs[label].items())
             }
             n_rows = sum(
                 len(r)
@@ -413,12 +395,7 @@ def _():
         for label in (0, 1):
             srcs = [s for l, s in draws if l == label]
             if srcs:
-                dist = (
-                    pd.Series(srcs)
-                    .value_counts(normalize=True)
-                    .round(3)
-                    .to_dict()
-                )
+                dist = pd.Series(srcs).value_counts(normalize=True).round(3).to_dict()
                 print(f"  label={label} realized: {dist}")
 
     return LabelSourceSubjectBalancedSampler, describe_sampler
@@ -432,16 +409,12 @@ def _():
 
     TRAIN_AUGMENT = transforms.Compose(
         [
-            transforms.RandomResizedCrop(
-                224, scale=(0.8, 1.0), ratio=(0.95, 1.05)
-            ),
+            transforms.RandomResizedCrop(224, scale=(0.8, 1.0), ratio=(0.95, 1.05)),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.ColorJitter(
                 brightness=0.2, contrast=0.2, saturation=0.15, hue=0.05
             ),
-            transforms.RandomApply(
-                [transforms.GaussianBlur(kernel_size=3)], p=0.3
-            ),
+            transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.3),
         ]
     )
 
@@ -528,12 +501,8 @@ def _(
 ):
     def make_loaders(train: pd.DataFrame, val: pd.DataFrame, cfg: RunConfig):
         """Build the train (sampled) and val (sequential) loaders."""
-        train_ds = PADFrameDataset(
-            train, augment=True, target_size=cfg.target_size
-        )
-        val_ds = PADFrameDataset(
-            val, augment=False, target_size=cfg.target_size
-        )
+        train_ds = PADFrameDataset(train, augment=True, target_size=cfg.target_size)
+        val_ds = PADFrameDataset(val, augment=False, target_size=cfg.target_size)
         sampler = LabelSourceSubjectBalancedSampler(
             train,
             num_samples=len(train),
@@ -578,24 +547,19 @@ def _(BACKBONE_IDS, DEVICE, RunConfig):
             for i in range(n_blocks_to_unfreeze):
                 layer_idx = last - i
                 for name, p in model.named_parameters():
-                    if (
-                        f"encoder.layer.{layer_idx}." in name
-                        or name.startswith("layernorm")
+                    if f"encoder.layer.{layer_idx}." in name or name.startswith(
+                        "layernorm"
                     ):
                         p.requires_grad = True
 
-        print(
-            f"Unfrozen last {n_blocks_to_unfreeze} backbone blocks for training"
-        )
+        print(f"Unfrozen last {n_blocks_to_unfreeze} backbone blocks for training")
         return model
 
     return (load_backbone,)
 
 
 @app.function
-def compute_freq_bands(
-    imgs: torch.Tensor, n_fft_bins=12, n_dct_bins=8, fft_size=64
-):
+def compute_freq_bands(imgs: torch.Tensor, n_fft_bins=12, n_dct_bins=8, fft_size=64):
     """Frequency target: ring-binned FFT energy + zigzag-grouped DCT energy.
 
     FFT rings capture global periodicities (moiré, halftone); DCT blocks
@@ -618,14 +582,8 @@ def compute_freq_bands(
         torch.arange(fft_size, device=imgs.device),
         indexing="ij",
     )
-    radius = torch.sqrt(
-        (yy - fft_size / 2) ** 2 + (xx - fft_size / 2) ** 2
-    )
-    bin_idx = (
-        (radius / radius.max() * (n_fft_bins - 1))
-        .long()
-        .clamp(0, n_fft_bins - 1)
-    )
+    radius = torch.sqrt((yy - fft_size / 2) ** 2 + (xx - fft_size / 2) ** 2)
+    bin_idx = (radius / radius.max() * (n_fft_bins - 1)).long().clamp(0, n_fft_bins - 1)
     fft_bands = torch.stack(
         [
             magnitude[:, bin_idx == b].mean(dim=1)
@@ -637,17 +595,11 @@ def compute_freq_bands(
 
     # 8x8 DCT-II over non-overlapping blocks, grouped by zigzag order so
     # low/mid/high frequency energy is pooled the way JPEG scans it.
-    blocks = (
-        gray.unfold(2, 8, 8).unfold(3, 8, 8).contiguous().view(B, -1, 8, 8)
-    )
+    blocks = gray.unfold(2, 8, 8).unfold(3, 8, 8).contiguous().view(B, -1, 8, 8)
     n = torch.arange(8, device=imgs.device, dtype=torch.float32)
-    basis = torch.cos(
-        torch.pi * n.unsqueeze(1) * (n.unsqueeze(0) + 0.5) / 8
-    )
+    basis = torch.cos(torch.pi * n.unsqueeze(1) * (n.unsqueeze(0) + 0.5) / 8)
     dct = torch.einsum("bijk,kl->bijl", blocks, basis)
-    dct = torch.einsum(
-        "bijk,kl->bijl", dct.transpose(-2, -1), basis
-    ).transpose(-2, -1)
+    dct = torch.einsum("bijk,kl->bijl", dct.transpose(-2, -1), basis).transpose(-2, -1)
     flat = torch.log1p(dct.abs()).reshape(B, -1)
 
     zigzag = torch.tensor(
@@ -728,9 +680,7 @@ def compute_freq_bands(
     )
 
     bands = torch.cat([fft_bands, dct_bands], dim=1)
-    return (bands - bands.mean(1, keepdim=True)) / (
-        bands.std(1, keepdim=True) + 1e-6
-    )
+    return (bands - bands.mean(1, keepdim=True)) / (bands.std(1, keepdim=True) + 1e-6)
 
 
 @app.cell
@@ -764,9 +714,7 @@ def _(DEVICE):
             pixel_values = inputs["pixel_values"].to(device)
 
             # Get depth prediction
-            with torch.autocast(
-                device_type="cuda" if "cuda" in device else "cpu"
-            ):
+            with torch.autocast(device_type="cuda" if "cuda" in device else "cpu"):
                 outputs = model(pixel_values)
                 # DepthAnything outputs predicted_depth directly
                 depth = outputs.predicted_depth
@@ -845,9 +793,7 @@ def LivenessModel(DEVICE, compute_depth_map):
                     nn.Dropout(0.5),
                     nn.Linear(128, n_freq_bins),
                 )
-            self.num_registers = getattr(
-                backbone.config, "num_register_tokens", 0
-            )
+            self.num_registers = getattr(backbone.config, "num_register_tokens", 0)
 
         def forward(
             self,
@@ -863,9 +809,7 @@ def LivenessModel(DEVICE, compute_depth_map):
             patches = hidden[:, 1 + self.num_registers :].mean(dim=1)
             if self.use_geometry:
                 if geometry is None:
-                    raise ValueError(
-                        "use_geometry=True but no geometry tensor"
-                    )
+                    raise ValueError("use_geometry=True but no geometry tensor")
                 cls_in = torch.cat([cls_in, geometry], dim=-1)
 
             if self.use_freq_head:
@@ -899,9 +843,7 @@ def LivenessModel(DEVICE, compute_depth_map):
 
 
 @app.function
-def find_best_iberta_threshold(
-    scores, labels, max_bpcer: float
-) -> tuple[float, str]:
+def find_best_iberta_threshold(scores, labels, max_bpcer: float) -> tuple[float, str]:
     """Find threshold optimized for iBeta requirements:
     - Minimize APCER subject to BPCER ≤ max_bpcer
     - If impossible, find threshold with BPCER as close to max_bpcer as possible
@@ -981,9 +923,7 @@ def find_best_iberta_threshold(
 
 
 @app.function
-def find_best_acer_threshold(
-    scores, labels, max_bpcer: float
-) -> tuple[float, str]:
+def find_best_acer_threshold(scores, labels, max_bpcer: float) -> tuple[float, str]:
     """Pick the operating threshold. Returns (threshold, note).
 
     Objective, in priority order, targeting 0% APCER:
@@ -1025,9 +965,7 @@ def find_best_acer_threshold(
             feasible = (float(t), acer)
 
     if zero_apcer:
-        zero_apcer.sort(
-            key=lambda p: (p[0], -p[1])
-        )  # ties -> wider margin
+        zero_apcer.sort(key=lambda p: (p[0], -p[1]))  # ties -> wider margin
         bpcer, threshold = zero_apcer[0]
         note = (
             f"0% val APCER costs BPCER {bpcer:.4f} (cap {max_bpcer:.2f}), "
@@ -1045,23 +983,15 @@ def find_best_acer_threshold(
 
 
 @app.cell
-def _():
+def _(MIN_SLICE_N):
     def rate_metrics(scores, labels, threshold) -> dict:
         """APCER / BPCER / ACER at one threshold. score >= threshold -> live."""
         scores = np.asarray(scores, dtype=float)
         labels = np.asarray(labels)
         live = labels == 1
         predicted_live = scores >= threshold
-        apcer = (
-            float(predicted_live[~live].mean())
-            if (~live).any()
-            else float("nan")
-        )
-        bpcer = (
-            float((~predicted_live[live]).mean())
-            if live.any()
-            else float("nan")
-        )
+        apcer = float(predicted_live[~live].mean()) if (~live).any() else float("nan")
+        bpcer = float((~predicted_live[live]).mean()) if live.any() else float("nan")
         return {
             "apcer": apcer,
             "bpcer": bpcer,
@@ -1120,7 +1050,69 @@ def _():
             .reset_index()
         )
 
-    return per_attack_apcer, rate_metrics
+    def video_level_metrics(
+        scores,
+        labels,
+        attack_types,
+        video_ids,
+        threshold,
+        agg="median",
+        min_n=MIN_SLICE_N,
+    ):
+        """Aggregate frame scores to video level and compute metrics.
+
+        `agg` can be "mean", "median", or "fraction_live" (majority
+        vote: fraction of frames in the video with score >= threshold).
+        Returns (metrics_dict, per_attack_df).
+        """
+        scores = np.asarray(scores, dtype=float)
+        labels = np.asarray(labels)
+        attack_types = np.asarray(attack_types)
+        video_ids = np.asarray(video_ids)
+        df = pd.DataFrame(
+            {
+                "video_id": video_ids,
+                "score": scores,
+                "binary_label": labels,
+                "attack_type": attack_types,
+            }
+        )
+        if agg == "fraction_live":
+            grouped = df.groupby("video_id").agg(
+                binary_label=("binary_label", "first"),
+                attack_type=("attack_type", "first"),
+                score=("score", lambda s: (np.asarray(s) >= threshold).mean()),
+            )
+        else:
+            grouped = df.groupby("video_id").agg(
+                binary_label=("binary_label", "first"),
+                attack_type=("attack_type", "first"),
+                score=("score", agg),
+            )
+        grouped = grouped.reset_index()
+        live = grouped["binary_label"] == 1
+        predicted_live = grouped["score"] >= threshold
+        apcer = float(predicted_live[~live].mean()) if (~live).any() else float("nan")
+        bpcer = float((~predicted_live[live]).mean()) if live.any() else float("nan")
+        metrics = {
+            "apcer": apcer,
+            "bpcer": bpcer,
+            "acer": 0.5 * (apcer + bpcer),
+            "n_videos_live": int(live.sum()),
+            "n_videos_spoof": int((~live).sum()),
+        }
+        live_types = set(grouped.loc[live, "attack_type"])
+        per_attack = per_attack_apcer(
+            grouped["score"].values,
+            grouped["binary_label"].values,
+            grouped["attack_type"].values,
+            threshold,
+            live_types,
+            min_n,
+        )
+        return metrics, per_attack
+
+    return per_attack_apcer, rate_metrics, video_level_metrics
 
 
 @app.cell
@@ -1190,7 +1182,58 @@ def _(DEVICE, NORMALIZE):
             )
         return out
 
-    return (score_loader,)
+    @torch.no_grad()
+    def score_loader_ensemble(
+        models,
+        loader,
+        use_geometry: bool,
+        df: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Run an ensemble of models over a loader; average logits.
+
+        Returns a DataFrame with the same schema as `score_loader`,
+        but `score` is the sigmoid of the mean logit across models.
+        """
+        for m in models:
+            m.eval()
+        rows = []
+        for imgs, labels, atk, dev, geometry, fam in loader:
+            imgs = NORMALIZE(imgs.to(DEVICE))
+            geometry = geometry.to(DEVICE) if use_geometry else None
+            logits_list = []
+            for model in models:
+                logits, _, _ = model(imgs, geometry)
+                logits_list.append(logits)
+            mean_logits = torch.stack(logits_list, dim=0).mean(dim=0)
+            scores = torch.sigmoid(mean_logits).cpu().numpy()
+            for s, l, a, d, f in zip(scores, labels.tolist(), atk, dev, fam):
+                rows.append(
+                    {
+                        "score": float(s),
+                        "binary_label": int(l),
+                        "attack_type": a,
+                        "device": d,
+                        "pai_family": f,
+                    }
+                )
+        out = pd.DataFrame(rows)
+        if df is not None:
+            if len(df) != len(out):
+                raise ValueError(
+                    f"score_loader_ensemble: df has {len(df)} rows but the loader yielded "
+                    f"{len(out)} -- the cached scores would be misaligned"
+                )
+            carry = ["video_id", "subject_id", "dataset_source", "frame_path"]
+            for _opt in ("detector_confidence",):
+                if _opt in df.columns:
+                    carry.append(_opt)
+            out = pd.concat(
+                [df[carry].reset_index(drop=True), out],
+                axis=1,
+            )
+        return out
+
+    return (score_loader, score_loader_ensemble)
 
 
 @app.cell
@@ -1217,9 +1260,7 @@ def _(rate_metrics):
         for t in thresholds:
             m = rate_metrics(scores, labels, float(t))
             rows.append({"threshold": float(t), **m})
-        return (
-            pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
-        )
+        return pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
 
     def summarize_roc(curve: pd.DataFrame, max_bpcer: float) -> dict:
         """Headline numbers off the ROC: EER, and APCER at a BPCER<=cap point.
@@ -1236,9 +1277,7 @@ def _(rate_metrics):
             "apcer_at_bpcer_cap": float(feasible["apcer"].min())
             if not feasible.empty
             else float("nan"),
-            "bpcer_at_apcer_zero": float(
-                curve[curve["apcer"] == 0]["bpcer"].min()
-            )
+            "bpcer_at_apcer_zero": float(curve[curve["apcer"] == 0]["bpcer"].min())
             if (curve["apcer"] == 0).any()
             else float("nan"),
         }
@@ -1286,9 +1325,7 @@ def _(DEVICE, NORMALIZE, rate_metrics):
         fixed cut.
         """
         set_seed(cfg.seed)
-        backbone_params = [
-            p for p in model.backbone.parameters() if p.requires_grad
-        ]
+        backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
         head_params = list(model.cls_head.parameters())
         if model.use_freq_head:
             head_params += list(model.freq_head.parameters())
@@ -1370,10 +1407,7 @@ def _(DEVICE, NORMALIZE, rate_metrics):
 
                 # Apply label smoothing and class weights
                 # Label smoothing: target = label * (1 - smoothing) + 0.5 * smoothing
-                target = (
-                    labels * (1 - cfg.label_smoothing)
-                    + 0.5 * cfg.label_smoothing
-                )
+                target = labels * (1 - cfg.label_smoothing) + 0.5 * cfg.label_smoothing
 
                 # Classification loss: focal loss (or BCE fallback)
                 if cfg.use_focal_loss:
@@ -1407,16 +1441,12 @@ def _(DEVICE, NORMALIZE, rate_metrics):
                     depth_target = (
                         labels.float()
                     )  # Live=1 -> target=1, Spoof=0 -> target=0
-                    depth_loss = (
-                        mse(depth_var, depth_target) * cfg.lambda_depth
-                    )
+                    depth_loss = mse(depth_var, depth_target) * cfg.lambda_depth
 
                 loss = loss + depth_loss
 
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), max_norm=1.0
-                )
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 opt.step()
                 total += loss.item()
 
@@ -1493,16 +1523,12 @@ def _(DEVICE, NORMALIZE, rate_metrics):
             if improved:
                 best = {
                     "aper": m["apcer"],
-                    "state": {
-                        k: v.clone() for k, v in model.state_dict().items()
-                    },
+                    "state": {k: v.clone() for k, v in model.state_dict().items()},
                     "epoch": epoch,
                 }
                 no_improve = 0
                 if ckpt_path:
-                    os.makedirs(
-                        os.path.dirname(ckpt_path) or ".", exist_ok=True
-                    )
+                    os.makedirs(os.path.dirname(ckpt_path) or ".", exist_ok=True)
                     torch.save(best["state"], ckpt_path)
             else:
                 no_improve += 1
@@ -1511,9 +1537,7 @@ def _(DEVICE, NORMALIZE, rate_metrics):
             current_lr = opt.param_groups[0]["lr"]
             current_backbone_lr = opt.param_groups[0]["lr"]
             current_head_lr = (
-                opt.param_groups[1]["lr"]
-                if len(opt.param_groups) > 1
-                else current_lr
+                opt.param_groups[1]["lr"] if len(opt.param_groups) > 1 else current_lr
             )
             print(
                 f"  epoch {epoch:3d}  loss {h['train_loss']:.4f}  bce {h['val_bce']:.4f}"
@@ -1594,23 +1618,34 @@ def _(
     summarize_roc,
     train_model,
 ):
-    def run_training(checkpoint_name: str = "vits_simple_training_fold1"):
-        """Main training function with tqdm progress bars."""
+    def run_training(
+        checkpoint_name: str = "vits_simple_training_fold1",
+        seed: int | None = None,
+        use_focal_loss: bool | None = None,
+    ):
+        """Main training function with tqdm progress bars.
+
+        Pass `seed` and/or `use_focal_loss` to override the RunConfig
+        defaults without editing the dataclass by hand -- useful for
+        multi-seed ensemble runs.
+        """
 
         # Create checkpoint directory
         os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
         # Configuration
         cfg = RunConfig()
+        if seed is not None:
+            cfg.seed = seed
+        if use_focal_loss is not None:
+            cfg.use_focal_loss = use_focal_loss
         fold = 1  # Using fold 1 for simplicity
 
         print(f"\n{'=' * 70}\n{cfg.name} · fold {fold}\n{'=' * 70}")
 
         # Load data
         train_df, val_df = load_fold_data(fold)
-        live_types = set(
-            train_df.loc[train_df["binary_label"] == 1, "attack_type"]
-        )
+        live_types = set(train_df.loc[train_df["binary_label"] == 1, "attack_type"])
 
         # Create data loaders
         train_loader, val_loader, sampler = make_loaders(train_df, val_df, cfg)
@@ -1653,9 +1688,7 @@ def _(
             model.load_state_dict(torch.load(ckpt, map_location=DEVICE))
             print("  Checkpoint loaded successfully!")
         else:
-            print(
-                f"  No existing checkpoint found. Starting fresh training..."
-            )
+            print(f"  No existing checkpoint found. Starting fresh training...")
             # Train the model
             model, history, _ = train_model(
                 model,
@@ -1677,9 +1710,7 @@ def _(
         print("EVALUATION ON VALIDATION SET")
         print("=" * 50)
 
-        val_scores = score_loader(
-            model, val_loader, cfg.use_geometry, df=val_df
-        )
+        val_scores = score_loader(model, val_loader, cfg.use_geometry, df=val_df)
         thr, note = find_best_iberta_threshold(
             val_scores["score"], val_scores["binary_label"], cfg.max_bpcer
         )
@@ -1723,29 +1754,20 @@ def _(
             print(
                 f"    APCER@BPCER<={cfg.max_bpcer}: {roc_summary['apcer_at_bpcer_cap']:.4f}"
             )
-            print(
-                f"    BPCER@APCER=0: {roc_summary['bpcer_at_apcer_zero']:.4f}"
-            )
+            print(f"    BPCER@APCER=0: {roc_summary['bpcer_at_apcer_zero']:.4f}")
 
         print(f"\n  Model Info:")
-        print(
-            f"    Total params: {sum(p.numel() for p in model.parameters()):,}"
-        )
+        print(f"    Total params: {sum(p.numel() for p in model.parameters()):,}")
         print(
             f"    Trainable params: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
         )
 
         # Show LR schedule info if used
-        if (
-            hasattr(cfg, "lr_scheduler_type")
-            and cfg.lr_scheduler_type != "none"
-        ):
+        if hasattr(cfg, "lr_scheduler_type") and cfg.lr_scheduler_type != "none":
             print(f"\n  LR Schedule: {cfg.lr_scheduler_type}")
             if hasattr(cfg, "lr_decay_factor"):
                 print(f"    Decay factor: {cfg.lr_decay_factor}")
-                if cfg.lr_scheduler_type == "step" and hasattr(
-                    cfg, "lr_decay_epochs"
-                ):
+                if cfg.lr_scheduler_type == "step" and hasattr(cfg, "lr_decay_epochs"):
                     print(f"    Decay every: {cfg.lr_decay_epochs} epochs")
 
         return model, val_scores, thr
@@ -1813,9 +1835,7 @@ def _(
             # Keep only official test rows
             is_official = videos["split_role"] == "official_test"
             videos = videos[is_official]
-            frames = frames.merge(
-                videos[["video_id"]], on="video_id", how="inner"
-            )
+            frames = frames.merge(videos[["video_id"]], on="video_id", how="inner")
             frames["binary_label"] = (frames["label"] == "genuine").astype(int)
             frames["frame_path"] = frames[["frame_path"]].map(
                 lambda p: os.path.join(root, p)
@@ -1826,9 +1846,7 @@ def _(
         print(f"Test set loaded: {len(test_frames)} frames")
 
         # Create test dataset and loader
-        test_dataset = PADFrameDataset(
-            test_frames, augment=False, target_size=224
-        )
+        test_dataset = PADFrameDataset(test_frames, augment=False, target_size=224)
         test_loader = DataLoader(
             test_dataset,
             batch_size=32,
@@ -1923,9 +1941,7 @@ def _(
                 )
 
         # ROC analysis on test set
-        test_curve = roc_table(
-            test_scores["score"], test_scores["binary_label"]
-        )
+        test_curve = roc_table(test_scores["score"], test_scores["binary_label"])
         if not test_curve.empty:
             test_roc_summary = summarize_roc(test_curve, 0.15)
             print(f"\n  Test ROC Analysis:")
@@ -1933,9 +1949,7 @@ def _(
             print(
                 f"    APCER@BPCER<=0.15: {test_roc_summary['apcer_at_bpcer_cap']:.4f}"
             )
-            print(
-                f"    BPCER@APCER=0: {test_roc_summary['bpcer_at_apcer_zero']:.4f}"
-            )
+            print(f"    BPCER@APCER=0: {test_roc_summary['bpcer_at_apcer_zero']:.4f}")
 
         return test_scores, thr, test_metrics
 
@@ -1978,21 +1992,15 @@ def _(evaluate_test_set):
 
 @app.cell
 def _(CHECKPOINT_DIR, fs):
-    def save_checkpoint_to_drive(
-        local_path: str, drive_dir: str = "pl_checkpoints"
-    ):
+    def save_checkpoint_to_drive(local_path: str, drive_dir: str = "pl_checkpoints"):
         """Upload a local checkpoint file to Google Drive under `drive_dir`."""
-        assert os.path.exists(local_path), (
-            f"Local file not found: {local_path}"
-        )
+        assert os.path.exists(local_path), f"Local file not found: {local_path}"
         filename = os.path.basename(local_path)
         remote_path = f"{drive_dir}/{filename}"
         with open(local_path, "rb") as f:
             data = f.read()
         fs.pipe(remote_path, data)
-        print(
-            f"Uploaded {local_path} -> {remote_path} ({len(data) / 1e6:.1f} MB)"
-        )
+        print(f"Uploaded {local_path} -> {remote_path} ({len(data) / 1e6:.1f} MB)")
 
     for ckpt_file in sorted(Path(CHECKPOINT_DIR).glob("*.pt")):
         save_checkpoint_to_drive(str(ckpt_file))
