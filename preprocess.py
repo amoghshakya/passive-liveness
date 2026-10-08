@@ -9,7 +9,7 @@
 #     "numpy",
 #     "opencv-python-headless",
 #     "pandas>=3.0.5",
-#     "pillow==12.3.0",
+#     "pillow>=12.0.0",
 #     "python-lsp-ruff==2.3.4",
 #     "python-lsp-server==1.15.0",
 #     "ruff==0.16.7",
@@ -21,7 +21,7 @@
 
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.25.1"
 app = marimo.App(width="medium", auto_download=["html"])
 
 with app.setup:
@@ -87,6 +87,7 @@ with app.setup:
 
     def is_genuine_label(raw: str) -> bool:
         return str(raw).strip().lower() in GENUINE_LABELS
+
     PAI_FAMILY = {
         "live": "live",
         "print": "print",
@@ -124,7 +125,6 @@ with app.setup:
                 ("kaggle_webcam_", "fas_ibeta_l1_webcam"),
                 ("td_replay_", "fas_ibeta_l1_replay"),
                 ("axon_print_", "fas_ibeta_l1_axonprint"),
-                ("ytplayer_", "fas_ibeta_l1_ytplayer"),
             ],
         },
         {
@@ -217,7 +217,7 @@ def _():
 
 
 @app.cell
-def _(api, POOLS, DIRECT_POOL_DIRS):
+def _(api):
     # Derived from the canonical pool lists, not hand-maintained: a pool that
     # exists but is missing from this list lets the fetch be skipped while a
     # stale copy of that pool stays on disk.
@@ -235,11 +235,11 @@ def _(api, POOLS, DIRECT_POOL_DIRS):
         api.snapshot_download(
             repo_id=HF_REPO_ID,
             repo_type="dataset",
-            allow_patterns=["datasets/*"],
+            allow_patterns=["*"],
             # Keeps the two hand-curated CSV backups next to metadata.csv out of
             # the Hub, so a future sync can't silently promote one over the other.
-            ignore_patterns=["datasets/**/*.bak"],
-            local_dir=".",
+            ignore_patterns=["**/*.bak"],
+            local_dir="./datasets",
             token=HF_TOKEN,
             max_workers=16,
         )
@@ -250,7 +250,7 @@ def _(api, POOLS, DIRECT_POOL_DIRS):
 
 
 @app.cell
-def _(POOLS, CSV_DRIVEN_DIRECT_POOLS, DIRECT_POOL_DIRS):
+def _():
     # A directory existing proves PRESENCE but not FRESHNESS: the guard above
     # skips the fetch entirely when all pool directories are present, so a tree
     # left over from an earlier sync survives a newer Hub revision unnoticed,
@@ -261,9 +261,7 @@ def _(POOLS, CSV_DRIVEN_DIRECT_POOLS, DIRECT_POOL_DIRS):
     _CSV_POOLS = [
         (p["dataset_source"], Path(p["input_dir"]), Path(p["metadata_csv"]))
         for p in POOLS
-    ] + [
-        (d, Path(d), Path(d) / "metadata.csv") for d in CSV_DRIVEN_DIRECT_POOLS
-    ]
+    ] + [(d, Path(d), Path(d) / "metadata.csv") for d in CSV_DRIVEN_DIRECT_POOLS]
 
     def verify_raw_pools(tolerance: float = 0.01) -> None:
         """Fail loudly when a pool's metadata does not resolve on disk.
@@ -331,14 +329,6 @@ def _():
 
 
 @app.cell
-def _():
-    subprocess.run(["pip", "uninstall", "-y", "onnxruntime"], check=True)
-    subprocess.run(["pip", "install", "onnxruntime-gpu"], check=True)
-    print("deps installed")
-    return
-
-
-@app.cell
 def config():
     # Config dataclass + sampling/stage enum constants.
     SAMPLING_STRATEGIES = [
@@ -361,11 +351,11 @@ def config():
     class Config:
         # I/O
         input_dir: Path = Path("fas_ibeta_l1")
-        metadata_csv: Path | None = (
-            None  # defaults to <input_dir>/metadata.csv
-        )
+        metadata_csv: Path | None = None  # defaults to <input_dir>/metadata.csv
         output_dir: Path = Path("processed_dataset")
-        dataset_source: str = "fas_ibeta_l1"  # tag written on every row; one value per input dataset
+        dataset_source: str = (
+            "fas_ibeta_l1"  # tag written on every row; one value per input dataset
+        )
         subpool_rules: list[tuple[str, str]] = field(default_factory=list)
         # (subject_id prefix, dataset_source override) pairs, checked in order,
         # first match wins. Lets one raw input dataset split into finer
@@ -397,7 +387,9 @@ def config():
         face_size: int = (
             512  # aligned crop side length; NOT the model's final input size
         )
-        crop_margin_scale: float = 1.0  # <1.0 zooms out (align_face), revealing more context around the face
+        crop_margin_scale: float = (
+            1.0  # <1.0 zooms out (align_face), revealing more context around the face
+        )
         adaptive_crop_margin: bool = False  # if True, derive margin_scale per-face from face-to-frame area ratio instead of the fixed crop_margin_scale
 
         # splits
@@ -424,9 +416,7 @@ def config():
                 )
             for s in self.stages:
                 if s not in STAGES:
-                    raise ValueError(
-                        f"unknown stage {s!r}, must be one of {STAGES}"
-                    )
+                    raise ValueError(f"unknown stage {s!r}, must be one of {STAGES}")
 
         def to_json(self) -> str:
             d = asdict(self)
@@ -488,9 +478,7 @@ def video_io():
         n = min(num_candidates, frame_count)
         if n <= 1:
             return [0]
-        return sorted(
-            {round(i * (frame_count - 1) / (n - 1)) for i in range(n)}
-        )
+        return sorted({round(i * (frame_count - 1) / (n - 1)) for i in range(n)})
 
     @dataclass(frozen=True)
     class RawFrame:
@@ -523,15 +511,11 @@ def video_io():
                             ts_msec / 1000.0
                             if ts_msec and ts_msec > 0
                             else (
-                                idx / fallback_fps
-                                if fallback_fps > 0
-                                else float(idx)
+                                idx / fallback_fps if fallback_fps > 0 else float(idx)
                             )
                         )
                         out.append(
-                            RawFrame(
-                                frame_index=idx, timestamp_sec=ts, image=frame
-                            )
+                            RawFrame(frame_index=idx, timestamp_sec=ts, image=frame)
                         )
                 idx += 1
         finally:
@@ -583,9 +567,7 @@ def face_detect():
                 ctx_id=0 if self.device == "cuda" else -1, **prepare_kwargs
             )
 
-        def detect_batch(
-            self, frames_bgr: list[np.ndarray]
-        ) -> list[list[Detection]]:
+        def detect_batch(self, frames_bgr: list[np.ndarray]) -> list[list[Detection]]:
             if not frames_bgr:
                 return []
             results: list[list[Detection]] = []
@@ -637,9 +619,7 @@ def tracking(Detection):
     class TrackedFrame:
         frame_index: int
         detection: Detection | None
-        track_status: (
-            str  # "ok" | "no_face" | "track_reacquired" | "primary_face_lost"
-        )
+        track_status: str  # "ok" | "no_face" | "track_reacquired" | "primary_face_lost"
 
     def track_primary_face(
         frame_indices: list[int],
@@ -680,14 +660,9 @@ def tracking(Detection):
                 return ((c[0] - lc[0]) ** 2 + (c[1] - lc[1]) ** 2) ** 0.5
 
             cand = min(dets, key=dist)
-            size_ratio = (
-                area(cand.box) / area(last_box) if area(last_box) > 0 else 0.0
-            )
+            size_ratio = area(cand.box) / area(last_box) if area(last_box) > 0 else 0.0
             lo, hi = reacquire_size_ratio_range
-            if (
-                dist(cand) <= reacquire_center_factor * diag
-                and lo <= size_ratio <= hi
-            ):
+            if dist(cand) <= reacquire_center_factor * diag and lo <= size_ratio <= hi:
                 out.append(TrackedFrame(idx, cand, "track_reacquired"))
                 last_box = cand.box
             else:
@@ -745,17 +720,13 @@ def quality(Detection, TrackedFrame):
         accepted: bool
         reason: str | None
         detector_confidence: float | None
-        face_bbox: (
-            tuple[int, int, int, int] | None
-        )  # x1, y1, x2, y2, clipped to frame
+        face_bbox: tuple[int, int, int, int] | None  # x1, y1, x2, y2, clipped to frame
         face_width: int | None
         face_height: int | None
         blur_score: float | None
         pose_asym: float | None
 
-    def blur_score(
-        frame_bgr: np.ndarray, bbox: tuple[int, int, int, int]
-    ) -> float:
+    def blur_score(frame_bgr: np.ndarray, bbox: tuple[int, int, int, int]) -> float:
         x1, y1, x2, y2 = bbox
         crop = frame_bgr[y1:y2, x1:x2]
         if crop.size == 0:
@@ -932,9 +903,7 @@ def align():
         x1, y1, x2, y2 = face_bbox
         frame_h, frame_w = frame_shape[:2]
         face_area_ratio = ((x2 - x1) * (y2 - y1)) / max(1.0, frame_w * frame_h)
-        return float(
-            np.interp(face_area_ratio, [0.05, 0.3], [max_scale, min_scale])
-        )
+        return float(np.interp(face_area_ratio, [0.05, 0.3], [max_scale, min_scale]))
 
     return REF_112, adaptive_margin_scale, align_face
 
@@ -965,16 +934,10 @@ def geometry():
         mouth_mid = (mouth_l + mouth_r) / 2.0
 
         return GeometryFeatures(
-            interocular_dist_norm=float(
-                np.linalg.norm(left_eye - right_eye) / norm
-            ),
+            interocular_dist_norm=float(np.linalg.norm(left_eye - right_eye) / norm),
             eye_to_nose_dist_norm=float(np.linalg.norm(eye_mid - nose) / norm),
-            nose_to_mouth_dist_norm=float(
-                np.linalg.norm(nose - mouth_mid) / norm
-            ),
-            eye_to_mouth_dist_norm=float(
-                np.linalg.norm(eye_mid - mouth_mid) / norm
-            ),
+            nose_to_mouth_dist_norm=float(np.linalg.norm(nose - mouth_mid) / norm),
+            eye_to_mouth_dist_norm=float(np.linalg.norm(eye_mid - mouth_mid) / norm),
             mouth_width_norm=float(np.linalg.norm(mouth_l - mouth_r) / norm),
             face_aspect_ratio=float(w / h),
         )
@@ -988,9 +951,7 @@ def sampling():
     def clip_count(n_available: int, num_frames: int) -> int:
         return min(n_available, num_frames)
 
-    def dedup_pad(
-        idxs: list[int], n_available: int, num_frames: int
-    ) -> list[int]:
+    def dedup_pad(idxs: list[int], n_available: int, num_frames: int) -> list[int]:
         """Round-off can collide two targets on the same index; pad with the
         nearest unused index so we return exactly min(n_available, num_frames)."""
         want = clip_count(n_available, num_frames)
@@ -1000,9 +961,7 @@ def sampling():
             return ordered[:want]
         remaining = [i for i in range(n_available) if i not in chosen]
         # fill by proximity to existing picks, cheap and good enough for small n
-        remaining.sort(
-            key=lambda r: min(abs(r - c) for c in ordered) if ordered else r
-        )
+        remaining.sort(key=lambda r: min(abs(r - c) for c in ordered) if ordered else r)
         for r in remaining:
             ordered.append(r)
             if len(ordered) >= want:
@@ -1067,17 +1026,11 @@ def sampling():
         want = clip_count(n_available, num_frames)
         if want <= 0:
             return []
-        if (
-            weights is None
-            or len(weights) != n_available
-            or weights.sum() <= 0
-        ):
+        if weights is None or len(weights) != n_available or weights.sum() <= 0:
             probs = np.full(n_available, 1.0 / n_available)
         else:
             probs = weights / weights.sum()
-        idxs = rng.choice(
-            n_available, size=want, replace=False, p=probs
-        ).tolist()
+        idxs = rng.choice(n_available, size=want, replace=False, p=probs).tolist()
         return sorted(idxs)
 
     def center_biased(
@@ -1094,16 +1047,12 @@ def sampling():
         positions = np.arange(n_available)
         probs = np.exp(-0.5 * ((positions - center) / sigma) ** 2)
         probs = probs / probs.sum()
-        idxs = rng.choice(
-            n_available, size=want, replace=False, p=probs
-        ).tolist()
+        idxs = rng.choice(n_available, size=want, replace=False, p=probs).tolist()
         return sorted(idxs)
 
     STRATEGIES: dict[
         str,
-        Callable[
-            [int, int, np.random.Generator, np.ndarray | None], list[int]
-        ],
+        Callable[[int, int, np.random.Generator, np.ndarray | None], list[int]],
     ] = {
         "uniform": uniform,
         "random": random_strategy,
@@ -1135,7 +1084,9 @@ def source_metadata():
         session: str | None
         environment: str | None
         active_zoom: str  # "unknown" unless a dataset explicitly records it
-        raw_label: str  # original label string from the source CSV, kept for traceability
+        raw_label: (
+            str  # original label string from the source CSV, kept for traceability
+        )
         split_role: str = "development"
 
     def slug(s: str) -> str:
@@ -1186,10 +1137,9 @@ def source_metadata():
                 #   label        the original, which for those pools holds the
                 #                PAI class directly ("on_actor", not "spoof")
                 # Prefer the most specific available.
-                explicit_attack_type = (
-                    (row.get("attack_type") or "").strip()
-                    or (row.get("pai") or "").strip()
-                )
+                explicit_attack_type = (row.get("attack_type") or "").strip() or (
+                    row.get("pai") or ""
+                ).strip()
                 if label == "genuine":
                     attack_type = "live"
                 elif explicit_attack_type:
@@ -1199,13 +1149,18 @@ def source_metadata():
                 subject_id = row["user_id"] or "unknown_subject"
                 file_id = row.get("file_id", "")
                 stem = slug(Path(dst_path).stem)
-                media_type = "image" if Path(dst_path).suffix.lower() in {
-                    ".jpg",
-                    ".jpeg",
-                    ".png",
-                    ".bmp",
-                    ".webp",
-                } else "video"
+                media_type = (
+                    "image"
+                    if Path(dst_path).suffix.lower()
+                    in {
+                        ".jpg",
+                        ".jpeg",
+                        ".png",
+                        ".bmp",
+                        ".webp",
+                    }
+                    else "video"
+                )
                 video_id = f"v{file_id}_{slug(subject_id)}_{stem}"
                 split_role = (row.get("split_role") or "development").strip()
                 # capture_device carries the real value where both are
@@ -1310,9 +1265,7 @@ def extract(
         # fingerprints comparable -- a bare tuple in subpool_rules would
         # otherwise never equal its own cached form and silently defeat
         # --skip-existing.
-        return json.loads(
-            json.dumps({k: getattr(cfg, k) for k in FINGERPRINT_FIELDS})
-        )
+        return json.loads(json.dumps({k: getattr(cfg, k) for k in FINGERPRINT_FIELDS}))
 
     def manifest_path(out_dir: Path) -> Path:
         return out_dir / "manifest.json"
@@ -1331,9 +1284,7 @@ def extract(
             data["video_row"], data["frame_rows"], data["candidate_rows"]
         )
 
-    def save_cache(
-        out_dir: Path, result: ExtractResult, fingerprint: dict
-    ) -> None:
+    def save_cache(out_dir: Path, result: ExtractResult, fingerprint: dict) -> None:
         mp = manifest_path(out_dir)
         mp.write_text(
             json.dumps(
@@ -1398,7 +1349,11 @@ def extract(
     def _frame_row(media, frame_index, timestamp, seq, qr, geo, out_dir, frame_name):
         rel_frame = Path("faces") / media.subject_id / media.video_id / frame_name
         rel_landmarks = (
-            Path("faces") / media.subject_id / media.video_id / "landmarks" / frame_name.replace(".jpg", ".npy")
+            Path("faces")
+            / media.subject_id
+            / media.video_id
+            / "landmarks"
+            / frame_name.replace(".jpg", ".npy")
         )
         return {
             "subject_id": media.subject_id,
@@ -1439,6 +1394,16 @@ def extract(
         np.save(out_dir / "landmarks" / filename.replace(".jpg", ".npy"), landmarks)
         return filename
 
+    def _write_frame_seq(out_dir, aligned, landmarks, seq):
+        """Persist one aligned crop + its landmarks with an explicit sequence
+        number; return the frame filename."""
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "landmarks").mkdir(exist_ok=True)
+        filename = f"frame_{seq:03d}.jpg"
+        cv2.imwrite(str(out_dir / filename), aligned, [cv2.IMWRITE_JPEG_QUALITY, 97])
+        np.save(out_dir / "landmarks" / filename.replace(".jpg", ".npy"), landmarks)
+        return filename
+
     def process_image_impl(
         image: VideoRecord,
         cfg: Config,
@@ -1455,21 +1420,34 @@ def extract(
         base_row = _base_media_row(image)
         frame_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if frame_bgr is None:
-            base_row.update({
-                "fps": None, "frame_count": 1, "duration": None,
-                "width": None, "height": None,
-                "num_candidates_evaluated": 0, "num_frames_accepted": 0,
-                "num_frames_selected": 0, "usable_interval_start_idx": None,
-                "usable_interval_end_idx": None, "status": "error",
-                "error_message": f"could not read image: {image_path}",
-            })
+            base_row.update(
+                {
+                    "fps": None,
+                    "frame_count": 1,
+                    "duration": None,
+                    "width": None,
+                    "height": None,
+                    "num_candidates_evaluated": 0,
+                    "num_frames_accepted": 0,
+                    "num_frames_selected": 0,
+                    "usable_interval_start_idx": None,
+                    "usable_interval_end_idx": None,
+                    "status": "error",
+                    "error_message": f"could not read image: {image_path}",
+                }
+            )
             return ExtractResult(base_row, [], [])
 
         height, width = frame_bgr.shape[:2]
-        base_row.update({
-            "fps": None, "frame_count": 1, "duration": None,
-            "width": width, "height": height,
-        })
+        base_row.update(
+            {
+                "fps": None,
+                "frame_count": 1,
+                "duration": None,
+                "width": width,
+                "height": height,
+            }
+        )
         detections = detector.detect_batch([frame_bgr])
         tracked = track_primary_face([0], detections, cfg.iou_track_threshold)
         qcfg = QualityConfig.from_config(cfg)
@@ -1477,32 +1455,36 @@ def extract(
         candidate = _candidate_row(
             image, 0, 0.0, tracked[0], qr, qr.accepted, 1 if qr.accepted else None
         )
-        base_row.update({
-            "num_candidates_evaluated": 1,
-            "num_frames_accepted": int(qr.accepted),
-            "num_frames_selected": int(qr.accepted),
-            "usable_interval_start_idx": 0 if qr.accepted else None,
-            "usable_interval_end_idx": 0 if qr.accepted else None,
-            "status": "ok" if qr.accepted else "no_usable_face",
-            "error_message": None if qr.accepted else qr.reason,
-        })
+        base_row.update(
+            {
+                "num_candidates_evaluated": 1,
+                "num_frames_accepted": int(qr.accepted),
+                "num_frames_selected": int(qr.accepted),
+                "usable_interval_start_idx": 0 if qr.accepted else None,
+                "usable_interval_end_idx": 0 if qr.accepted else None,
+                "status": "ok" if qr.accepted else "no_usable_face",
+                "error_message": None if qr.accepted else qr.reason,
+            }
+        )
         if not qr.accepted:
             return ExtractResult(base_row, [], [candidate])
 
         det: Detection = tracked[0].detection
         margin_scale = (
             adaptive_margin_scale(qr.face_bbox, frame_bgr.shape)
-            if cfg.adaptive_crop_margin else cfg.crop_margin_scale
+            if cfg.adaptive_crop_margin
+            else cfg.crop_margin_scale
         )
         aligned = align_face(
-            frame_bgr, det.landmarks, cfg.face_size,
-            margin_scale=margin_scale, fallback_bbox=qr.face_bbox,
+            frame_bgr,
+            det.landmarks,
+            cfg.face_size,
+            margin_scale=margin_scale,
+            fallback_bbox=qr.face_bbox,
         )
         frame_filename = _write_frame(out_dir, aligned, det.landmarks, "frame_001.jpg")
         geo = compute_geometry(det.landmarks, qr.face_bbox)
-        frame_row = _frame_row(
-            image, 0, 0.0, 1, qr, geo, out_dir, frame_filename
-        )
+        frame_row = _frame_row(image, 0, 0.0, 1, qr, geo, out_dir, frame_filename)
         return ExtractResult(base_row, [frame_row], [candidate])
 
     def process_video(
@@ -1591,9 +1573,7 @@ def extract(
         qcfg = QualityConfig.from_config(cfg)
 
         candidate_rows: list[dict] = []
-        accepted: list[
-            tuple
-        ] = []  # (raw_frame, tracked_frame, quality_result)
+        accepted: list[tuple] = []  # (raw_frame, tracked_frame, quality_result)
         for rf, tf in zip(raw_frames, tracked):
             qr = evaluate(rf.image, tf, qcfg)
             candidate_rows.append(
@@ -1628,13 +1608,9 @@ def extract(
             [a[2].detector_confidence or 0.0 for a in accepted], dtype=float
         )
         strategy_fn = STRATEGIES[cfg.sampling_strategy]
-        picked_positions = strategy_fn(
-            n_accepted, cfg.num_frames, rng, weights
-        )
+        picked_positions = strategy_fn(n_accepted, cfg.num_frames, rng, weights)
 
-        chosen_frame_indices = {
-            accepted[p][0].frame_index for p in picked_positions
-        }
+        chosen_frame_indices = {accepted[p][0].frame_index for p in picked_positions}
         # frame_index -> 1-based sequence position, so the candidate audit log
         # and the frame rows agree on ordering
         chosen_order = {
@@ -1662,14 +1638,18 @@ def extract(
                 fallback_bbox=qr.face_bbox,
             )
 
-            frame_filename = _write_frame(
-                out_dir, aligned, det.landmarks, f"frame_{seq:03d}.jpg"
-            )
+            frame_filename = _write_frame_seq(out_dir, aligned, det.landmarks, seq)
             geo = compute_geometry(det.landmarks, qr.face_bbox)
             frame_rows.append(
                 _frame_row(
-                    video, rf.frame_index, rf.timestamp_sec, seq, qr, geo,
-                    out_dir, frame_filename,
+                    video,
+                    rf.frame_index,
+                    rf.timestamp_sec,
+                    seq,
+                    qr,
+                    geo,
+                    out_dir,
+                    frame_filename,
                 )
             )
 
@@ -1741,20 +1721,65 @@ def metadata_writer():
                     "num_videos": len(g),
                     "num_genuine_videos": int((g["label"] == "genuine").sum()),
                     "num_spoof_videos": int((g["label"] == "spoof").sum()),
-                    "attack_types_present": ",".join(
-                        sorted(g["attack_type"].unique())
-                    ),
+                    "attack_types_present": ",".join(sorted(g["attack_type"].unique())),
                     "devices_present": ",".join(
                         sorted(d for d in g["device"].unique() if d)
                     ),
                     "num_frames_selected_total": len(frame_g),
                 }
             )
-        return (
-            pd.DataFrame(rows).sort_values("subject_id").reset_index(drop=True)
-        )
+        return pd.DataFrame(rows).sort_values("subject_id").reset_index(drop=True)
 
-    return (write_metadata,)
+    def validate_csv_schema(output_dir: Path) -> None:
+        """Check that every written CSV has the columns downstream expects.
+
+        A schema drift between preprocessing and training surfaces as a
+        confusing KeyError deep in the notebook. Failing here names the
+        missing column and the file, which is the whole difference.
+        """
+        required = {
+            "videos.csv": [
+                "subject_id",
+                "video_id",
+                "label",
+                "attack_type",
+                "dataset_source",
+                "split_role",
+            ],
+            "frames.csv": [
+                "subject_id",
+                "video_id",
+                "label",
+                "attack_type",
+                "dataset_source",
+                "frame_path",
+                "interocular_dist_norm",
+                "eye_to_nose_dist_norm",
+                "nose_to_mouth_dist_norm",
+                "eye_to_mouth_dist_norm",
+                "mouth_width_norm",
+                "face_aspect_ratio",
+                "pose_asym",
+            ],
+        }
+        meta_dir = output_dir / "metadata"
+        problems = []
+        for fname, cols in required.items():
+            path = meta_dir / fname
+            if not path.is_file():
+                problems.append(f"{path}: file missing")
+                continue
+            with path.open(newline="") as f:
+                actual = set(csv.DictReader(f).fieldnames or [])
+            missing = [c for c in cols if c not in actual]
+            if missing:
+                problems.append(f"{fname}: missing columns {missing}")
+        if problems:
+            raise RuntimeError(
+                "CSV schema validation failed:\n  " + "\n  ".join(problems)
+            )
+
+    return validate_csv_schema, write_metadata
 
 
 @app.cell
@@ -1762,9 +1787,7 @@ def balance():
     # Subject/label-balanced sampling and per-frame weights.
     try:
         from torch.utils.data import Sampler
-    except (
-        ImportError
-    ):  # torch is a hard dep here, but keep this importable without it
+    except ImportError:  # torch is a hard dep here, but keep this importable without it
         Sampler = object  # type: ignore[assignment,misc]
 
     class SubjectBalancedSampler(Sampler):
@@ -1868,9 +1891,7 @@ def balance():
                 subjects = list(by_subject)
                 videos = by_subject[subjects[rng.integers(len(subjects))]]
                 video_ids = list(videos)
-                frame_positions = videos[
-                    video_ids[rng.integers(len(video_ids))]
-                ]
+                frame_positions = videos[video_ids[rng.integers(len(video_ids))]]
                 yield frame_positions[rng.integers(len(frame_positions))]
 
     def compute_frame_weights(frames_df: pd.DataFrame) -> pd.Series:
@@ -1879,12 +1900,10 @@ def balance():
         uniform across frames within a video. Usable with
         WeightedRandomSampler."""
         num_subjects = frames_df["subject_id"].nunique()
-        videos_per_subject = frames_df.groupby("subject_id")[
-            "video_id"
-        ].transform("nunique")
-        frames_per_video = frames_df.groupby("video_id")["frame_id"].transform(
-            "count"
+        videos_per_subject = frames_df.groupby("subject_id")["video_id"].transform(
+            "nunique"
         )
+        frames_per_video = frames_df.groupby("video_id")["frame_id"].transform("count")
         weight = 1.0 / (num_subjects * videos_per_subject * frames_per_video)
         return weight
 
@@ -1920,9 +1939,7 @@ def splits():
                     "majority_attack_type": majority_attack,
                 }
             )
-        return (
-            pd.DataFrame(rows).sort_values("subject_id").reset_index(drop=True)
-        )
+        return pd.DataFrame(rows).sort_values("subject_id").reset_index(drop=True)
 
     def stratified_or_plain_fold(
         subjects: pd.DataFrame, y_col: str, n_splits: int, seed: int
@@ -1942,9 +1959,7 @@ def splits():
         y = subjects[y_col]
         min_class_count = y.value_counts().min()
         if min_class_count >= n_splits:
-            skf = StratifiedKFold(
-                n_splits=n_splits, shuffle=True, random_state=seed
-            )
+            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
             return list(skf.split(subjects, y))
         warnings.warn(
             f"cannot stratify {n_splits}-fold by {y_col!r}: smallest class has only "
@@ -2006,9 +2021,7 @@ def splits():
         val = set(fold["val_subjects"])
         errors = []
         if train & val:
-            errors.append(
-                f"fold {fold['fold']}: train ∩ val = {sorted(train & val)}"
-            )
+            errors.append(f"fold {fold['fold']}: train ∩ val = {sorted(train & val)}")
         return errors
 
     def write_splits(
@@ -2046,9 +2059,7 @@ def splits():
                 stale_test.unlink()
             for split_name in ("train", "val"):
                 subject_ids = set(fold[f"{split_name}_subjects"])
-                sub_df = videos_df[videos_df["subject_id"].isin(subject_ids)][
-                    cols
-                ]
+                sub_df = videos_df[videos_df["subject_id"].isin(subject_ids)][cols]
                 sub_df.to_csv(fold_dir / f"{split_name}.csv", index=False)
 
         return all_errors
@@ -2070,9 +2081,7 @@ def report(verify_no_leakage, videos_per_subject_stats):
             if not videos_df.empty
             else 0,
             "total_videos": len(videos_df),
-            "total_genuine_videos": int(
-                (videos_df["label"] == "genuine").sum()
-            )
+            "total_genuine_videos": int((videos_df["label"] == "genuine").sum())
             if not videos_df.empty
             else 0,
             "total_spoof_videos": int((videos_df["label"] == "spoof").sum())
@@ -2190,9 +2199,7 @@ def report(verify_no_leakage, videos_per_subject_stats):
         for section, content in report.items():
             if isinstance(content, dict):
                 for k, v in content.items():
-                    flat_rows.append(
-                        {"section": section, "key": k, "value": v}
-                    )
+                    flat_rows.append({"section": section, "key": k, "value": v})
             elif isinstance(content, list):
                 for i, item in enumerate(content):
                     if isinstance(item, dict):
@@ -2204,9 +2211,7 @@ def report(verify_no_leakage, videos_per_subject_stats):
                                     "value": v,
                                 }
                             )
-        pd.DataFrame(flat_rows).to_csv(
-            reports_dir / "dataset_summary.csv", index=False
-        )
+        pd.DataFrame(flat_rows).to_csv(reports_dir / "dataset_summary.csv", index=False)
 
         any_leakage = any(not s["ok"] for s in report["split_verification"])
         if any_leakage:
@@ -2291,16 +2296,14 @@ def contact_sheets(read_frames_at):
                     )
                 )
         if cells:
-            grid(
-                cells, cols=min(6, len(cells)), title="genuine examples"
-            ).save(out_dir / "genuine_examples.jpg", quality=92)
+            grid(cells, cols=min(6, len(cells)), title="genuine examples").save(
+                out_dir / "genuine_examples.jpg", quality=92
+            )
 
         for attack_type, g in frames_df[frames_df["label"] == "spoof"].groupby(
             "attack_type"
         ):
-            sample = sample_distinct(
-                g, examples_per_group, ["subject_id", "video_id"]
-            )
+            sample = sample_distinct(g, examples_per_group, ["subject_id", "video_id"])
             cells = []
             for _, row in sample.iterrows():
                 img_path = input_output_dir / row["frame_path"]
@@ -2331,16 +2334,12 @@ def contact_sheets(read_frames_at):
         rejected = candidates_df[candidates_df["quality_status"] == "rejected"]
         if rejected.empty:
             return
-        video_path_by_id = videos_df.set_index("video_id")[
-            "video_path"
-        ].to_dict()
+        video_path_by_id = videos_df.set_index("video_id")["video_path"].to_dict()
         fps_by_id = videos_df.set_index("video_id")["fps"].to_dict()
 
         cells = []
         for reason, g in rejected.groupby("rejection_reason"):
-            sample = sample_distinct(
-                g, examples_per_reason, ["subject_id", "video_id"]
-            )
+            sample = sample_distinct(g, examples_per_reason, ["subject_id", "video_id"])
             for _, row in sample.iterrows():
                 vid = row["video_id"]
                 vpath = input_dir / video_path_by_id.get(vid, "")
@@ -2389,20 +2388,16 @@ def contact_sheets(read_frames_at):
             )
         )
         for vid in video_ids:
-            g = frames_df[frames_df["video_id"] == vid].sort_values(
-                "sequence_position"
-            )
+            g = frames_df[frames_df["video_id"] == vid].sort_values("sequence_position")
             cells = []
             for _, row in g.iterrows():
                 img_path = input_output_dir / row["frame_path"]
                 if img_path.exists():
-                    cells.append(
-                        (Image.open(img_path), f"t{row['sequence_position']}")
-                    )
+                    cells.append((Image.open(img_path), f"t{row['sequence_position']}"))
             if cells:
-                grid(
-                    cells, cols=len(cells), title=f"{vid} (chronological)"
-                ).save(out_dir / f"sequence_{vid}.jpg", quality=92)
+                grid(cells, cols=len(cells), title=f"{vid} (chronological)").save(
+                    out_dir / f"sequence_{vid}.jpg", quality=92
+                )
 
     def build_contact_sheets(
         output_dir: Path,
@@ -2414,9 +2409,7 @@ def contact_sheets(read_frames_at):
     ) -> None:
         out_dir = output_dir / "reports" / "contact_sheets"
         out_dir.mkdir(parents=True, exist_ok=True)
-        genuine_and_spoof_sheets(
-            frames_df, out_dir, output_dir, examples_per_group
-        )
+        genuine_and_spoof_sheets(frames_df, out_dir, output_dir, examples_per_group)
         rejected_examples_sheet(
             candidates_df, videos_df, out_dir, input_dir, examples_per_group
         )
@@ -2438,6 +2431,7 @@ def pipeline(
     generate_folds,
     load_video_records,
     process_video,
+    validate_csv_schema,
     videos_per_subject_stats,
     write_metadata,
     write_report,
@@ -2469,9 +2463,7 @@ def pipeline(
             if cfg.limit_videos is not None:
                 records = records[: cfg.limit_videos]
 
-            detector = FaceDetector(
-                device=cfg.device, det_thresh=cfg.det_thresh
-            )
+            detector = FaceDetector(device=cfg.device, det_thresh=cfg.det_thresh)
             video_rows, frame_rows, candidate_rows = [], [], []
             for video in tqdm(records, desc="extracting frames"):
                 result: ExtractResult = process_video(video, cfg, detector)
@@ -2494,6 +2486,7 @@ def pipeline(
                 dfs["candidates"].to_dict("records"),
             )
             dfs.update(written)
+            validate_csv_schema(cfg.output_dir)
         elif "videos" not in dfs:
             dfs.update(load_existing(cfg.output_dir))
 
@@ -2514,9 +2507,7 @@ def pipeline(
             stats = videos_per_subject_stats(dfs["videos"])
             print("videos per subject:", stats)
             frames_with_w = dfs["frames"].copy()
-            frames_with_w["sample_weight"] = compute_frame_weights(
-                frames_with_w
-            )
+            frames_with_w["sample_weight"] = compute_frame_weights(frames_with_w)
             out = cfg.output_dir / "metadata" / "frame_weights.csv"
             frames_with_w[
                 ["frame_id", "subject_id", "video_id", "sample_weight"]
@@ -2524,9 +2515,7 @@ def pipeline(
             print(f"wrote {out}")
 
         if "report" in cfg.stages:
-            rep = build_report(
-                dfs["videos"], dfs["frames"], dfs["candidates"], folds
-            )
+            rep = build_report(dfs["videos"], dfs["frames"], dfs["candidates"], folds)
             write_report(cfg.output_dir, rep)
             print(f"wrote report to {cfg.output_dir / 'reports'}")
 
@@ -2547,7 +2536,7 @@ def pipeline(
 
 
 @app.cell
-def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
+def direct_ingest_helpers(Detection, FaceDetector, REF_112, compute_geometry):
     # Direct-ingest helpers: naming, landmark recovery, the item record.
     # Every image extension the direct-ingest pools may use.
     IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
@@ -2563,9 +2552,14 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
         attack species. test_data_ibeta gets its species from the CATEGORY
         DIRECTORY instead, and custom_pad_dataset from its metadata.csv --
         neither needs (or should use) filename guessing.
+
+        An unrecognized token is raised as a ValueError rather than silently
+        mapped to "unknown": a silent fallback lets a typo in a filename
+        propagate into training data as an attack_type the model has never
+        seen, which is exactly how a pool ends up untestable.
         """
         value = (value or "unknown").lower()
-        return {
+        mapping = {
             "printed_photo": "print",
             "print_photo": "print",
             "printout": "print",
@@ -2576,8 +2570,15 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
             "phone_video": "replay",
             "mobile_replay": "replay",
             "replay_video": "replay",
-        }.get(value, "unknown")
+        }
+        if value in mapping:
+            return mapping[value]
+        raise ValueError(
+            f"canonical_attack: unrecognized attack token {value!r}. "
+            f"Known tokens: {sorted(mapping)}"
+        )
 
+    @dataclass(frozen=True)
     class ExistingCrop:
         """Result of detecting landmarks on an already-cropped image.
 
@@ -2600,7 +2601,7 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
             return self.detection is not None
 
     # Create a shared detector instance for landmark recovery on pre-cropped images.
-    detector = FaceDetector(device="cuda")
+    detector = FaceDetector(device="cuda", det_thresh=0.05)
 
     def detect_existing_crop(path: Path) -> "ExistingCrop":
         """Run RetinaFace on a pre-cropped image to get landmarks + geometry.
@@ -2614,15 +2615,20 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
         if image is None:
             raise RuntimeError(f"could not read pre-cropped image: {path}")
         height, width = image.shape[:2]
-        detections = detector.detect_batch([image])
+        try:
+            detections = detector.detect_batch([image])
+        except Exception as e:
+            print(
+                f"  WARNING: RetinaFace raised {type(e).__name__} on "
+                f"{path.name} (falling back to full-image bbox): {e}"
+            )
+            detections = []
 
         def _synthetic_landmarks(h: int, w: int) -> np.ndarray:
             scale = min(w, h) / 112.0
             ref = REF_112 * scale
             cx, cy = w / 2.0, h / 2.0
-            return (
-                ref - ref.mean(axis=0) + np.array([cx, cy], dtype=np.float32)
-            )
+            return ref - ref.mean(axis=0) + np.array([cx, cy], dtype=np.float32)
 
         if not detections or not detections[0]:
             print(
@@ -2630,16 +2636,21 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
                 f"(falling back to full-image bbox): {path}"
             )
             return ExistingCrop(
-                None, (0, 0, width, height),
-                _synthetic_landmarks(height, width), None, None,
+                None,
+                (0, 0, width, height),
+                _synthetic_landmarks(height, width),
+                None,
+                None,
             )
 
         detection = max(
             detections[0],
-            key=lambda item: item.prob
-            * max(
-                0.0,
-                (item.box[2] - item.box[0]) * (item.box[3] - item.box[1]),
+            key=lambda item: (
+                item.prob
+                * max(
+                    0.0,
+                    (item.box[2] - item.box[0]) * (item.box[3] - item.box[1]),
+                )
             ),
         )
         x1, y1, x2, y2 = detection.box
@@ -2655,8 +2666,11 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
                 f"(falling back to full-image bbox): {path}"
             )
             return ExistingCrop(
-                None, (0, 0, width, height),
-                _synthetic_landmarks(height, width), None, None,
+                None,
+                (0, 0, width, height),
+                _synthetic_landmarks(height, width),
+                None,
+                None,
             )
 
         pose = None
@@ -2668,15 +2682,17 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
             left_eye, right_eye, nose = landmarks[:3]
             interocular = float(np.linalg.norm(left_eye - right_eye))
             if interocular > 1e-6:
-                pose = abs(
-                    abs(float(nose[0]) - float(left_eye[0]))
-                    - abs(float(right_eye[0]) - float(nose[0]))
-                ) / interocular
-        geometry = (
-            compute_geometry(landmarks, bbox) if has_real_landmarks else None
-        )
+                pose = (
+                    abs(
+                        abs(float(nose[0]) - float(left_eye[0]))
+                        - abs(float(right_eye[0]) - float(nose[0]))
+                    )
+                    / interocular
+                )
+        geometry = compute_geometry(landmarks, bbox) if has_real_landmarks else None
         return ExistingCrop(detection, bbox, landmarks, geometry, pose)
 
+    @dataclass(frozen=True)
     class DirectItem:
         path: Path
         subject_id: str
@@ -2686,23 +2702,14 @@ def direct_ingest_helpers(FaceDetector, REF_112, compute_geometry):
         device: str
         frame_index: int
 
-    return (
-        IMAGE_EXTS,
-        slug,
-        canonical_attack,
-        ExistingCrop,
-        detect_existing_crop,
-        DirectItem,
-    )
+    return DirectItem, IMAGE_EXTS, canonical_attack, detect_existing_crop
 
 
 @app.cell
-def direct_ingest_readers(IMAGE_EXTS):
+def direct_ingest_readers(DirectItem, IMAGE_EXTS, canonical_attack):
     def iter_files(root: Path) -> list[Path]:
         return sorted(
-            p
-            for p in root.rglob("*")
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+            p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS
         )
 
     def iter_convention_items(
@@ -2714,7 +2721,9 @@ def direct_ingest_readers(IMAGE_EXTS):
         """Directory-convention layouts.
 
         nested_attack=False -> <subject>/<label>/*.ext   (frames_cleaned_cropped_v2)
-        nested_attack=True  -> <batch>/<label>/<attack>/*.ext   (test_data_ibeta)
+        nested_attack=True  -> test_data_ibeta layout:
+            live:  <subject>/live/<clip>/<frame>     (4 levels)
+            spoof: <subject>/spoof/<spoof_type>/<clip>/<frame>  (5 levels)
         """
         items: list[DirectItem] = []
         for path in iter_files(input_dir):
@@ -2726,27 +2735,41 @@ def direct_ingest_readers(IMAGE_EXTS):
                 continue
             label = "genuine" if label_dir == "live" else "spoof"
 
-            if nested_attack and len(parts) >= 4:
-                attack = parts[2]
-            elif label == "genuine":
-                attack = "live"
-            elif nested_attack:
-                attack = "unknown"
-            else:
-                stem = re.sub(r"_frame_\d+$", "", path.stem)
-                token = stem.split("_SD_", 1)[-1].split("_scene", 1)[0]
-                attack = (
-                    "live" if label == "genuine" else canonical_attack(token)
-                )
-
-            frame_match = re.search(r"_frame_(\d+)$", path.stem)
-            frame_index = int(frame_match.group(1)) if frame_match else 0
-
             if nested_attack:
+                # Asymmetric depth: live has clip at parts[2], spoof at parts[3]
+                if label == "genuine":
+                    # parts = [subject, live, clip, frame...]
+                    if len(parts) < 4:
+                        continue
+                    clip_name = parts[2]
+                    attack = "live"
+                else:
+                    # parts = [subject, spoof, spoof_type, clip, frame...]
+                    if len(parts) < 5:
+                        continue
+                    attack = parts[2]  # spoof_type (e.g., print, print_cutouts, replay)
+                    clip_name = parts[3]
+
+                # Extract frame_index from filename (e.g., frame_001.jpg)
+                frame_match = re.search(r"_frame_(\d+)$", path.stem)
+                frame_index = int(frame_match.group(1)) if frame_match else 0
+
                 subject_id = f"official_test_{subject_dir}"
-                video_id = f"{subject_id}_{SAFE.sub('_', path.stem).strip('_')}"
+                # video_id = subject + clip, so all frames in same clip share video_id
+                video_id = f"{subject_id}_{SAFE.sub('_', clip_name).strip('_')}"
                 device = "unknown"
             else:
+                # frames_cleaned_cropped_v2: flat <subject>/<label>/<frame>
+                if label == "genuine":
+                    attack = "live"
+                else:
+                    stem = re.sub(r"_frame_\d+$", "", path.stem)
+                    token = stem.split("_SD_", 1)[-1].split("_scene", 1)[0]
+                    attack = canonical_attack(token)
+
+                frame_match = re.search(r"_frame_(\d+)$", path.stem)
+                frame_index = int(frame_match.group(1)) if frame_match else 0
+
                 subject_id = f"{dataset_source}_{subject_dir}"
                 video_id = f"{dataset_source}_{subject_dir}_{SAFE.sub('_', re.sub(r'_frame_\d+$', '', path.stem)).strip('_')}"
                 dev = re.search(r"_(android|laptop)_", path.stem)
@@ -2807,9 +2830,7 @@ def direct_ingest_readers(IMAGE_EXTS):
                         ),
                         attack_type=row["attack_type"],
                         device=row.get("device") or "unknown",
-                        frame_index=(
-                            int(frame_match.group(1)) if frame_match else 0
-                        ),
+                        frame_index=(int(frame_match.group(1)) if frame_match else 0),
                     )
                 )
         if skipped:
@@ -2819,11 +2840,11 @@ def direct_ingest_readers(IMAGE_EXTS):
             )
         return items
 
-    return iter_files, iter_convention_items, iter_metadata_items
+    return iter_convention_items, iter_metadata_items
 
 
 @app.cell
-def direct_ingest_writer(compute_geometry):
+def direct_ingest_writer(DirectItem, detect_existing_crop):
     def write_pool(
         items: list[DirectItem],
         output_dir: Path,
@@ -2852,7 +2873,10 @@ def direct_ingest_writer(compute_geometry):
 
             crop = detect_existing_crop(it.path)
             bbox, landmarks, geometry, pose = (
-                crop.bbox, crop.landmarks, crop.geometry, crop.pose_asym
+                crop.bbox,
+                crop.landmarks,
+                crop.geometry,
+                crop.pose_asym,
             )
             landmark_rel = (
                 Path("faces")
@@ -2873,10 +2897,7 @@ def direct_ingest_writer(compute_geometry):
                     "frame_index": it.frame_index,
                     "timestamp": None,
                     "frame_path": str(
-                        Path("faces")
-                        / it.subject_id
-                        / it.video_id
-                        / it.path.name
+                        Path("faces") / it.subject_id / it.video_id / it.path.name
                     ),
                     "landmark_path": str(landmark_rel),
                     "sequence_position": it.frame_index + 1,
@@ -2895,18 +2916,12 @@ def direct_ingest_writer(compute_geometry):
                     ),
                     "blur_score": None,
                     "device": it.device,
-                    "interocular_dist_norm": (
-                        g.interocular_dist_norm if g else None
-                    ),
-                    "eye_to_nose_dist_norm": (
-                        g.eye_to_nose_dist_norm if g else None
-                    ),
+                    "interocular_dist_norm": (g.interocular_dist_norm if g else None),
+                    "eye_to_nose_dist_norm": (g.eye_to_nose_dist_norm if g else None),
                     "nose_to_mouth_dist_norm": (
                         g.nose_to_mouth_dist_norm if g else None
                     ),
-                    "eye_to_mouth_dist_norm": (
-                        g.eye_to_mouth_dist_norm if g else None
-                    ),
+                    "eye_to_mouth_dist_norm": (g.eye_to_mouth_dist_norm if g else None),
                     "mouth_width_norm": g.mouth_width_norm if g else None,
                     "face_aspect_ratio": g.face_aspect_ratio if g else None,
                     "pose_asym": pose,
@@ -2979,9 +2994,7 @@ def direct_ingest_writer(compute_geometry):
                 {
                     "subject_id": subject_id,
                     "num_videos": len(group),
-                    "num_genuine_videos": int(
-                        (group["label"] == "genuine").sum()
-                    ),
+                    "num_genuine_videos": int((group["label"] == "genuine").sum()),
                     "num_spoof_videos": int((group["label"] == "spoof").sum()),
                     "attack_types_present": ",".join(
                         sorted(group["attack_type"].unique())
@@ -3013,15 +3026,17 @@ def direct_ingest_writer(compute_geometry):
             f"direct ingest {dataset_source}: {len(videos_df)} media, "
             f"{len(frames_df)} frames, {len(subjects)} subjects -> {output_dir}"
         )
-        print(
-            f"  attack_type: {dict(Counter(frames_df['attack_type']))}"
-        )
+        print(f"  attack_type: {dict(Counter(frames_df['attack_type']))}")
 
-    return write_pool
+    return (write_pool,)
 
 
 @app.cell
-def direct_ingest_pools():
+def direct_ingest_pools(
+    iter_convention_items,
+    iter_metadata_items,
+    write_pool,
+):
     def build_pre_cropped_pool():
         write_pool(
             iter_convention_items(
@@ -3136,9 +3151,7 @@ def combined_pool(Config, run):
             counts = []
             for name, src in pools.items():
                 df = pd.read_csv(src / "metadata" / f"{table}.csv")
-                n_eval = int(
-                    df["subject_id"].str.startswith(EVAL_PREFIX).sum()
-                )
+                n_eval = int(df["subject_id"].str.startswith(EVAL_PREFIX).sum())
                 df = df[~df["subject_id"].str.startswith(EVAL_PREFIX)]
                 df["pool"] = name
                 parts.append(df)
@@ -3214,10 +3227,15 @@ def merge_and_package(
     zip_path,
 ):
     pools = {
-        name: Path(path)
-        for name, path in DEFAULT_POOLS.items()
-        if Path(path).is_dir()
+        name: Path(path) for name, path in DEFAULT_POOLS.items() if Path(path).is_dir()
     }
+    missing = [name for name in DEFAULT_POOLS if name not in pools]
+    if missing:
+        raise SystemExit(
+            f"expected pools missing from disk: {missing}. "
+            f"Present: {sorted(pools)}. Re-run the direct-ingest and extraction "
+            f"cells before merging."
+        )
     if len(pools) < 2:
         raise SystemExit(f"fewer than 2 pools exist on disk ({list(pools)})")
 
@@ -3258,9 +3276,7 @@ def merge_and_package(
 def upload_to_drive(fs, official_test_zip_path, zip_path):
     for _zip in (zip_path, official_test_zip_path):
         if not _zip.exists():
-            raise FileNotFoundError(
-                f"expected processed artifact is missing: {_zip}"
-            )
+            raise FileNotFoundError(f"expected processed artifact is missing: {_zip}")
         print(f"Uploading {_zip} to Google Drive...")
         with (
             open(_zip, "rb") as local_f,
@@ -3277,7 +3293,7 @@ def cleanup():
     the next run re-downloads from Hugging Face and re-processes.
     """
     cleanup_targets = [
-        "datasets",
+        # "datasets",
         "processed_dataset",
         "processed_dataset_lcc_fasd",
         "processed_dataset_pad2d",
@@ -3300,6 +3316,11 @@ def cleanup():
             path.unlink()
         removed += 1
     print(f"Removed {removed} path(s). Next run re-downloads and re-processes.")
+    return
+
+
+@app.cell
+def _():
     return
 
 

@@ -42,6 +42,10 @@ with app.setup:
     from collections.abc import Iterator
     from tqdm.auto import tqdm
 
+    import multiprocessing as mp
+
+    mp.set_start_method("fork", force=True)
+
 
 @app.cell
 def _():
@@ -60,7 +64,7 @@ def _():
         use_freq_head: bool = True  # Step 2: auxiliary FFT+DCT band loss
         use_geometry: bool = True  # Step 3: 7 landmark ratios on the CLS token
         head_hidden: int = 128
-        lambda_freq: float = 1.0  # Weight for freq branch loss
+        lambda_freq: float = 1.3  # Weight for freq branch loss
 
         # depth (monocular)
         use_depth_head: bool = True
@@ -73,7 +77,7 @@ def _():
         weight_decay: float = 5e-4
         backbone_lr_mult: float = 0.1  # backbone learns slower than head
         patience: int = 15
-        label_smoothing: float = 0.1
+        label_smoothing: float = 0.0
         seed: int = 37
 
         # ---- Learning Rate Scheduling ------------------------------------
@@ -89,8 +93,8 @@ def _():
 
         # ---- Focal Loss (optional) ------------------------------------
         use_focal_loss: bool = False  # Replace BCE with focal loss
-        focal_gamma: float = 2.0  # Focusing parameter
         # Alpha weights derived from class frequencies (live ~37%, spoof ~63%)
+        focal_gamma: float = 2.0  # Focusing parameter
         focal_alpha_live: float = 0.63  # Weight for live class
         focal_alpha_spoof: float = 0.37  # Weight for spoof class
 
@@ -427,9 +431,31 @@ def _():
     SPOOF_SATURATION_AUGMENT = transforms.RandomApply(
         [transforms.ColorJitter(saturation=(1.2, 1.7))], p=0.4
     )
+
+    # Print cutout simulation: random rectangular occlusion (paper edges)
+    PRINT_CUTOUT_AUGMENT = transforms.RandomApply(
+        [
+            transforms.RandomErasing(
+                p=1.0,
+                scale=(0.03, 0.2),
+                ratio=(0.2, 5.0),
+                value=0,  # black = paper edge
+                inplace=False,
+            )
+        ],
+        p=0.4,
+    )
+
+    # Halftone/moire noise simulation
+    HALFTONE_NOISE = transforms.RandomApply(
+        [transforms.Lambda(lambda img: img + torch.randn_like(img) * 0.05)],
+        p=0.3,
+    )
     return (
         GENUINE_PERSPECTIVE_AUGMENT,
+        HALFTONE_NOISE,
         NORMALIZE,
+        PRINT_CUTOUT_AUGMENT,
         SPOOF_SATURATION_AUGMENT,
         TRAIN_AUGMENT,
     )
@@ -439,6 +465,8 @@ def _():
 def _(
     GENUINE_PERSPECTIVE_AUGMENT,
     GEOMETRY_COLS,
+    HALFTONE_NOISE,
+    PRINT_CUTOUT_AUGMENT,
     SPOOF_SATURATION_AUGMENT,
     TRAIN_AUGMENT,
 ):
@@ -464,12 +492,19 @@ def _(
             img = transforms.Resize((self.target_size, self.target_size))(img)
             if self.augment:
                 img = TRAIN_AUGMENT(img)
-                img = (
-                    GENUINE_PERSPECTIVE_AUGMENT(img)
-                    if row["binary_label"] == 1
-                    else SPOOF_SATURATION_AUGMENT(img)
-                )
+                if row["binary_label"] == 1:
+                    img = GENUINE_PERSPECTIVE_AUGMENT(img)
+                else:
+                    img = SPOOF_SATURATION_AUGMENT(img)
+
             tensor = transforms.ToTensor()(img)
+            if (
+                self.augment
+                and row["binary_label"] == 0
+                and row["attack_type"] == "print_cutouts"
+            ):
+                tensor = PRINT_CUTOUT_AUGMENT(tensor)
+                tensor = HALFTONE_NOISE(tensor)
             # NaN geometry (detector miss at extraction) becomes 0.0, a
             # plausible-looking landmark ratio. Flagged as a known gap rather
             # than dropped: dropping a frame loses the sample entirely.
@@ -516,15 +551,15 @@ def _(
                 train_ds,
                 batch_size=cfg.batch_size,
                 sampler=sampler,
-                num_workers=0,
-                pin_memory=True,
+                num_workers=4,
+                pin_memory=False,
             ),
             DataLoader(
                 val_ds,
                 batch_size=cfg.batch_size,
                 shuffle=False,
-                num_workers=0,
-                pin_memory=True,
+                num_workers=4,
+                pin_memory=False,
             ),
             sampler,
         )
@@ -983,6 +1018,70 @@ def find_best_acer_threshold(scores, labels, max_bpcer: float) -> tuple[float, s
 
 
 @app.cell
+def _(video_level_metrics):
+    def find_best_acer_threshold_clip(
+        scores,
+        labels,
+        attack_types,
+        video_ids,
+        max_bpcer: float,
+        agg: str = "median",
+        vote_frac: float = 0.5,
+    ) -> tuple[float, str]:
+        """Clip-level 0%-APCER-priority threshold selector."""
+        from numpy import unique, concatenate, inf
+
+        scores = np.asarray(scores, dtype=float)
+        labels = np.asarray(labels)
+        attack_types = np.asarray(attack_types)
+        video_ids = np.asarray(video_ids)
+
+        uniq = unique(scores)
+        candidates = concatenate(
+            ([uniq[0] - 1e-6], (uniq[:-1] + uniq[1:]) / 2.0, [uniq[-1] + 1e-6])
+        )
+
+        zero_apcer = []
+        best = (0.5, inf)
+        feasible = (None, inf)
+        for t in candidates:
+            vm, _ = video_level_metrics(
+                scores,
+                labels,
+                attack_types,
+                video_ids,
+                t,
+                agg=agg,
+                vote_frac=vote_frac,
+            )
+            bpcer = vm["bpcer"]
+            apcer = vm["apcer"]
+            acer = vm["acer"]
+            if apcer == 0.0:
+                zero_apcer.append((bpcer, float(t)))
+            if acer < best[1]:
+                best = (float(t), acer)
+            if bpcer <= max_bpcer and acer < feasible[1]:
+                feasible = (float(t), acer)
+
+        if zero_apcer:
+            zero_apcer.sort(key=lambda p: (p[0], -p[1]))
+            bpcer, threshold = zero_apcer[0]
+            note = (
+                f"0% clip APCER costs BPCER {bpcer:.4f} (cap {max_bpcer:.2f}), "
+                f"n_clips_spoof={int((labels == 0).sum())}"
+            )
+            if bpcer > max_bpcer:
+                note += " -- OUT OF SPEC on BPCER, kept because 0% APCER is primary"
+            return threshold, note
+
+        note = f"0% clip APCER UNREACHABLE; fell back to min-ACER under BPCER <= {max_bpcer:.2f}"
+        return (feasible[0] if feasible[0] is not None else best[0], note)
+
+    return (find_best_acer_threshold_clip,)
+
+
+@app.cell
 def _(MIN_SLICE_N):
     def rate_metrics(scores, labels, threshold) -> dict:
         """APCER / BPCER / ACER at one threshold. score >= threshold -> live."""
@@ -1057,12 +1156,15 @@ def _(MIN_SLICE_N):
         video_ids,
         threshold,
         agg="median",
+        vote_frac=0.5,
         min_n=MIN_SLICE_N,
     ):
         """Aggregate frame scores to video level and compute metrics.
 
-        `agg` can be "mean", "median", or "fraction_live" (majority
-        vote: fraction of frames in the video with score >= threshold).
+        `agg` can be "mean", "median", or "fraction_live" (vote:
+        fraction of frames in the video with score >= threshold).
+        For `fraction_live`, a video is classified as live if the fraction
+        of frames with score >= threshold is >= `vote_frac`.
         Returns (metrics_dict, per_attack_df).
         """
         scores = np.asarray(scores, dtype=float)
@@ -1091,7 +1193,10 @@ def _(MIN_SLICE_N):
             )
         grouped = grouped.reset_index()
         live = grouped["binary_label"] == 1
-        predicted_live = grouped["score"] >= threshold
+        if agg == "fraction_live":
+            predicted_live = grouped["score"] >= vote_frac
+        else:
+            predicted_live = grouped["score"] >= threshold
         apcer = float(predicted_live[~live].mean()) if (~live).any() else float("nan")
         bpcer = float((~predicted_live[live]).mean()) if live.any() else float("nan")
         metrics = {
@@ -1233,7 +1338,7 @@ def _(DEVICE, NORMALIZE):
             )
         return out
 
-    return (score_loader, score_loader_ensemble)
+    return (score_loader,)
 
 
 @app.cell
@@ -1286,22 +1391,24 @@ def _(rate_metrics):
     return roc_table, summarize_roc
 
 
+@app.function
+def focal_loss(logits, targets, labels, cfg):
+    """Focal loss with per-classj alpha weighting"""
+    bce_loss = nn.functional.binary_cross_entropy_with_logits(
+        logits, targets, reduction="none"
+    )
+    pt = torch.exp(-bce_loss)
+    alpha = torch.where(
+        labels > 0.5,
+        torch.full_like(logits, cfg.focal_alpha_live),
+        torch.full_like(logits, cfg.focal_alpha_spoof),
+    )
+    loss = alpha * (1 - pt) ** cfg.focal_gamma * bce_loss
+    return loss.mean()
+
+
 @app.cell
 def _(DEVICE, NORMALIZE, rate_metrics):
-    def focal_loss(logits, targets, labels, cfg):
-        """Focal loss with per-class alpha weighting."""
-        bce_loss = nn.functional.binary_cross_entropy_with_logits(
-            logits, targets, reduction="none"
-        )
-        pt = torch.exp(-bce_loss)
-        alpha = torch.where(
-            labels > 0.5,
-            torch.full_like(logits, cfg.focal_alpha_live),
-            torch.full_like(logits, cfg.focal_alpha_spoof),
-        )
-        loss = alpha * (1 - pt) ** cfg.focal_gamma * bce_loss
-        return loss.mean()
-
     def train_model(
         model,
         train_loader,
@@ -1329,6 +1436,8 @@ def _(DEVICE, NORMALIZE, rate_metrics):
         head_params = list(model.cls_head.parameters())
         if model.use_freq_head:
             head_params += list(model.freq_head.parameters())
+        if model.use_depth_head:
+            head_params += list(model.depth_head.parameters())
         print(
             f"  training {sum(p.numel() for p in backbone_params + head_params):,} params"
             f"  ({sum(p.numel() for p in backbone_params):,} backbone @ lr={cfg.lr * cfg.backbone_lr_mult:.2e},"
@@ -1346,9 +1455,22 @@ def _(DEVICE, NORMALIZE, rate_metrics):
 
         opt = torch.optim.Adam(param_groups)
 
-        # Learning rate scheduler
-        scheduler = None
-        if cfg.lr_scheduler_type == "step":
+        # Learning rate scheduler with proper warmup
+        # Use SequentialLR: LinearLR warmup -> CosineAnnealingLR
+        warmup_epochs = 5
+        if cfg.lr_scheduler_type == "cosine":
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                opt, start_factor=0.2, total_iters=warmup_epochs
+            )
+            cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                opt, T_max=cfg.epochs - warmup_epochs, eta_min=cfg.lr * 0.01
+            )
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                opt,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_epochs],
+            )
+        elif cfg.lr_scheduler_type == "step":
             scheduler = torch.optim.lr_scheduler.StepLR(
                 opt, step_size=cfg.lr_decay_epochs, gamma=cfg.lr_decay_factor
             )
@@ -1356,41 +1478,19 @@ def _(DEVICE, NORMALIZE, rate_metrics):
             scheduler = torch.optim.lr_scheduler.ExponentialLR(
                 opt, gamma=cfg.lr_decay_factor
             )
-        elif cfg.lr_scheduler_type == "cosine":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                opt, T_max=cfg.epochs, eta_min=cfg.lr * 0.01
-            )
+        else:
+            scheduler = None
+
         bce, mse = nn.BCEWithLogitsLoss(), nn.MSELoss()
         loss_note = ""
-
-        warmup_epochs = 5
 
         best = {"aper": np.inf, "state": None, "epoch": -1}
         history = []
         no_improve = 0
 
-        # # Calculate class weights for balanced loss
-        # # These weights help with class imbalance in the dataset
-        # class_weights = torch.tensor(
-        #     [
-        #         cfg.class_weight_spoof,  # weight for class 0 (spoof)
-        #         cfg.class_weight_live,  # weight for class 1 (live)
-        #     ],
-        #     device=DEVICE,
-        # )
-
         for epoch in range(cfg.epochs):
             model.train()
             total = 0.0
-
-            if epoch < warmup_epochs:
-                warmup_lr = cfg.lr * (epoch + 1) / warmup_epochs
-                for param_group in opt.param_groups:
-                    base_lr = warmup_lr
-                    if "backbone" in param_group.get("name", ""):
-                        param_group["lr"] = base_lr * cfg.backbone_lr_mult
-                    else:
-                        param_group["lr"] = base_lr
 
             for imgs, labels, _atk, _dev, geometry, _fam in train_loader:
                 raw = imgs.to(DEVICE)
@@ -1409,10 +1509,11 @@ def _(DEVICE, NORMALIZE, rate_metrics):
                 # Label smoothing: target = label * (1 - smoothing) + 0.5 * smoothing
                 target = labels * (1 - cfg.label_smoothing) + 0.5 * cfg.label_smoothing
 
-                # Classification loss: focal loss (or BCE fallback)
+                # classification loss: focal loss (or bce)
                 if cfg.use_focal_loss:
                     loss = focal_loss(logits, target, labels, cfg)
                 else:
+                    # Basic BCE loss
                     loss = bce(logits, target)
 
                 # Apply class weights manually since BCEWithLogitsLoss doesn't directly support per-sample weights
@@ -1515,16 +1616,30 @@ def _(DEVICE, NORMALIZE, rate_metrics):
             if not loss_note:
                 loss_note = note
 
-            # Check for improvement: lower APCER (since we're optimizing APCER subject to BPCER constraint)
-            improved = (
-                best["state"] is None or m["apcer"] < best["aper"] - 1e-6
-            )  # Small epsilon for improvement
+            # Check for improvement using the configured metric
+            # Use lexicographic key: (primary_metric, secondary_metric)
+            # This respects monitor_metric_for_early_stop config
+            primary_metric = cfg.monitor_metric_for_early_stop
+            if primary_metric == "bpc":
+                primary_val = m["bpcer"]
+                secondary_val = m["apcer"]
+            elif primary_metric == "acer":
+                primary_val = m["acer"]
+                secondary_val = m["bpcer"]
+            else:  # "loss" or fallback
+                primary_val = m["apcer"]
+                secondary_val = m["bpcer"]
+
+            key = (round(primary_val, 6), round(secondary_val, 6))
+            best_key = best.get("key", (float("inf"), float("inf")))
+            improved = best["state"] is None or key < best_key
 
             if improved:
                 best = {
                     "aper": m["apcer"],
                     "state": {k: v.clone() for k, v in model.state_dict().items()},
                     "epoch": epoch,
+                    "key": key,
                 }
                 no_improve = 0
                 if ckpt_path:
@@ -1619,7 +1734,7 @@ def _(
     train_model,
 ):
     def run_training(
-        checkpoint_name: str = "vits_simple_training_fold1",
+        checkpoint_name: str = "vitb_pad_exp",
         seed: int | None = None,
         use_focal_loss: bool | None = None,
     ):
@@ -1638,7 +1753,7 @@ def _(
         if seed is not None:
             cfg.seed = seed
         if use_focal_loss is not None:
-            cfg.use_focal_loss = use_focal_loss
+            cfg.use_focal_loss = True
         fold = 1  # Using fold 1 for simplicity
 
         print(f"\n{'=' * 70}\n{cfg.name} · fold {fold}\n{'=' * 70}")
@@ -1798,6 +1913,7 @@ def _(
     PADFrameDataset,
     RunConfig,
     fetch_official_test_bundle,
+    find_best_acer_threshold_clip,
     load_backbone,
     load_fold_data,
     per_attack_apcer,
@@ -1805,13 +1921,30 @@ def _(
     roc_table,
     score_loader,
     summarize_roc,
+    video_level_metrics,
 ):
-    def evaluate_test_set(checkpoint_path=None):
-        """Evaluate the model on the official iBeta test set."""
+    def evaluate_test_set(
+        checkpoint_path=None,
+        temporal_aggregate: bool = False,
+        agg_method: str = "median",
+        vote_frac: float = 0.5,
+        threshold_level: str = "frame",  # or "clip"
+    ):
+        """Evaluate the model on the official iBeta test set.
+
+        Args:
+            checkpoint_path: Path to model checkpoint.
+            temporal_aggregate: If True, also evaluate at clip/video level using
+                `agg_method` ("median", "mean", "fraction_live"). When True,
+                threshold is selected on validation at the same aggregation level.
+            agg_method: Aggregation method for clip-level scores.
+            vote_frac: For agg_method="fraction_live", clip is live if
+                fraction of frames >= threshold is >= vote_frac.
+        """
 
         # Determine checkpoint path
         if checkpoint_path is None:
-            checkpoint_path = f"{CHECKPOINT_DIR}/vits_simple_training_fold1.pt"
+            checkpoint_path = f"{CHECKPOINT_DIR}/vitb_pad_exp.pt"
 
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(
@@ -1851,8 +1984,8 @@ def _(
             test_dataset,
             batch_size=32,
             shuffle=False,
-            num_workers=0,
-            pin_memory=True,
+            num_workers=4,
+            pin_memory=False,
         )
 
         # load model
@@ -1879,8 +2012,8 @@ def _(
             val_dataset,
             batch_size=32,
             shuffle=False,
-            num_workers=0,
-            pin_memory=True,
+            num_workers=4,
+            pin_memory=False,
         )
 
         val_scores = score_loader(
@@ -1890,11 +2023,35 @@ def _(
             df=val_df,
         )
 
-        # Compute threshold on validation set using iBeta-optimized objective
-        thr, val_note = find_best_iberta_threshold(
-            val_scores["score"], val_scores["binary_label"], cfg.max_bpcer
+        # Compute threshold on validation set
+        # If temporal_aggregate, select threshold at clip/video level on val
+        if temporal_aggregate and threshold_level == "clip":
+            # Clip-level 0%-APCER-priority selector
+            thr, note = find_best_acer_threshold_clip(
+                val_scores["score"].values,
+                val_scores["binary_label"].values,
+                val_scores["attack_type"].values,
+                val_scores["video_id"].values,
+                cfg.max_bpcer,
+                agg=agg_method,
+                vote_frac=vote_frac,
+            )
+        else:
+            # Frame-level threshold selection (default, matches deployment)
+            thr, note = find_best_iberta_threshold(
+                val_scores["score"], val_scores["binary_label"], cfg.max_bpcer
+            )
+
+        print(f"  Validation threshold: {thr:.4f}  ({note})")
+
+        # Frame-level validation metrics
+        frame_val_metrics = rate_metrics(
+            val_scores["score"], val_scores["binary_label"], thr
         )
-        print(f"  Validation threshold: {thr:.4f}  ({val_note})")
+        print(f"  Frame-level validation:")
+        print(f"    APCER: {frame_val_metrics['apcer']:.4f}")
+        print(f"    BPCER: {frame_val_metrics['bpcer']:.4f}")
+        print(f"    ACER:  {frame_val_metrics['acer']:.4f}")
 
         # -------- TEST SET EVALUATION (using fixed threshold) --------
         test_scores = score_loader(
@@ -1903,20 +2060,22 @@ def _(
             use_geometry=True,
             df=test_frames,
         )
+
+        # Frame-level test metrics
         test_metrics = rate_metrics(
             test_scores["score"], test_scores["binary_label"], thr
         )
 
         print(f"\n" + "=" * 50)
-        print("OFFICIAL TEST SET EVALUATION (iBeta-optimized)")
+        print("OFFICIAL TEST SET EVALUATION")
         print("=" * 50)
         print(f"  Threshold: {thr:.4f}  (fixed from validation set)")
-        print(f"  Test Results:")
+        print(f"  Frame-level Test Results:")
         print(f"    APCER: {test_metrics['apcer']:.4f}")
         print(f"    BPCER: {test_metrics['bpcer']:.4f}")
         print(f"    ACER:  {test_metrics['acer']:.4f}")
 
-        # Per-attack breakdown on test set
+        # Per-attack breakdown on test set (frame-level)
         live_types_test = set(
             test_frames.loc[test_frames["binary_label"] == 1, "attack_type"]
         )
@@ -1929,7 +2088,7 @@ def _(
             MIN_SLICE_N,
         )
         if not per_attack_test.empty:
-            print(f"\n  Per-attack APCER (test set):")
+            print(f"\n  Per-attack APCER (frame-level test):")
             for _, r in per_attack_test.iterrows():
                 flag = ""
                 if r["low_evidence"]:
@@ -1940,16 +2099,67 @@ def _(
                     f"    {r['attack_type']:22s} {r['apcer']:.4f}  (n={r['n']}){flag}"
                 )
 
-        # ROC analysis on test set
+        # ROC analysis on test set (frame-level)
         test_curve = roc_table(test_scores["score"], test_scores["binary_label"])
         if not test_curve.empty:
             test_roc_summary = summarize_roc(test_curve, 0.15)
-            print(f"\n  Test ROC Analysis:")
+            print(f"\n  Test ROC Analysis (frame-level):")
             print(f"    EER: {test_roc_summary['eer']:.4f}")
             print(
                 f"    APCER@BPCER<=0.15: {test_roc_summary['apcer_at_bpcer_cap']:.4f}"
             )
             print(f"    BPCER@APCER=0: {test_roc_summary['bpcer_at_apcer_zero']:.4f}")
+
+        # Clip-level evaluation if requested
+        if temporal_aggregate:
+            print(
+                f"\n  Clip-level Test Results (agg={agg_method}"
+                + (f", vote_frac={vote_frac}" if agg_method == "fraction_live" else "")
+                + "):"
+            )
+
+            clip_metrics, clip_per_attack = video_level_metrics(
+                test_scores["score"].values,
+                test_scores["binary_label"].values,
+                test_frames["attack_type"].values,
+                test_frames["video_id"].values,
+                thr,
+                agg=agg_method,
+                vote_frac=vote_frac,
+            )
+            print(f"    APCER: {clip_metrics['apcer']:.4f}")
+            print(f"    BPCER: {clip_metrics['bpcer']:.4f}")
+            print(f"    ACER:  {clip_metrics['acer']:.4f}")
+            print(
+                f"    N clips live: {clip_metrics['n_videos_live']}, spoof: {clip_metrics['n_videos_spoof']}"
+            )
+
+            if not clip_per_attack.empty:
+                print(f"\n  Per-attack APCER (clip-level test):")
+                for _, r in clip_per_attack.iterrows():
+                    flag = ""
+                    if r["low_evidence"]:
+                        flag += "  LOW EVIDENCE"
+                    if r["apcer"] > 0:
+                        flag += "  <-- ABOVE 0% TARGET"
+                    print(
+                        f"    {r['attack_type']:22s} {r['apcer']:.4f}  (n={r['n']}){flag}"
+                    )
+
+            # Also evaluate on validation at clip level for comparison
+            val_clip_metrics, _ = video_level_metrics(
+                val_scores["score"].values,
+                val_scores["binary_label"].values,
+                val_scores["attack_type"].values,
+                val_scores["video_id"].values,
+                thr,
+                agg=agg_method,
+                vote_frac=vote_frac,
+            )
+            print(f"\n  Clip-level Validation (same threshold):")
+            print(f"    APCER: {val_clip_metrics['apcer']:.4f}")
+            print(f"    BPCER: {val_clip_metrics['bpcer']:.4f}")
+            print(f"    ACER:  {val_clip_metrics['acer']:.4f}")
 
         return test_scores, thr, test_metrics
 
@@ -1991,6 +2201,16 @@ def _(evaluate_test_set):
 
 
 @app.cell
+def _(evaluate_test_set):
+    evaluate_test_set(
+        temporal_aggregate=True,
+        agg_method="median",
+        threshold_level="clip",
+    )
+    return
+
+
+@app.cell
 def _(CHECKPOINT_DIR, fs):
     def save_checkpoint_to_drive(local_path: str, drive_dir: str = "pl_checkpoints"):
         """Upload a local checkpoint file to Google Drive under `drive_dir`."""
@@ -2004,11 +2224,6 @@ def _(CHECKPOINT_DIR, fs):
 
     for ckpt_file in sorted(Path(CHECKPOINT_DIR).glob("*.pt")):
         save_checkpoint_to_drive(str(ckpt_file))
-    return
-
-
-@app.cell
-def _():
     return
 
 
